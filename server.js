@@ -1,8 +1,10 @@
 const express = require("express");
 const crypto = require("crypto");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
+app.use(cookieParser());
 
 function base64url(buf) {
   return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
@@ -15,8 +17,7 @@ function codeChallenge(verifier) {
   return base64url(hash);
 }
 
-const pkce = new Map(); // state -> verifier
-let tokens = null;      // latest token response
+let tokens = null;
 
 app.get("/health", (req, res) => res.status(200).send("OK"));
 
@@ -25,7 +26,13 @@ app.get("/auth/fanvue", (req, res) => {
   const challenge = codeChallenge(verifier);
   const state = crypto.randomBytes(16).toString("hex");
 
-  pkce.set(state, verifier);
+  // Store verifier in cookie so Render restarts don't break callback
+  res.cookie(`pkce_${state}`, verifier, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    maxAge: 10 * 60 * 1000 // 10 minutes
+  });
 
   const authUrl = new URL("https://auth.fanvue.com/oauth2/auth");
   authUrl.searchParams.set("client_id", process.env.OAUTH_CLIENT_ID);
@@ -42,13 +49,22 @@ app.get("/auth/fanvue", (req, res) => {
 app.get("/oauth/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
-    const verifier = pkce.get(state);
 
-    if (!code || !state || !verifier) return res.status(400).send("Invalid callback");
+    if (!code || !state) {
+      return res.status(400).send(`Invalid callback: missing code/state`);
+    }
 
-    pkce.delete(state);
+    const cookieKey = `pkce_${state}`;
+    const verifier = req.cookies[cookieKey];
 
-    // IMPORTANT: Fanvue requires client_secret_basic
+    if (!verifier) {
+      return res.status(400).send("Invalid callback: missing verifier cookie (pkce)");
+    }
+
+    // clear cookie after use
+    res.clearCookie(cookieKey, { secure: true, sameSite: "lax" });
+
+    // Fanvue requires client_secret_basic
     const body = new URLSearchParams({
       grant_type: "authorization_code",
       code: String(code),
@@ -85,13 +101,11 @@ app.get("/oauth/status", (req, res) => {
   res.json({ authed: !!(tokens && tokens.access_token) });
 });
 
-// Webhook (POST-only)
 app.post("/webhooks/fanvue", (req, res) => {
   console.log("Fanvue webhook received", req.body);
   res.sendStatus(200);
 });
 
-// Optional: allow browser GET without confusion
 app.get("/webhooks/fanvue", (req, res) => res.status(200).send("OK"));
 
 const port = process.env.PORT || 3000;
