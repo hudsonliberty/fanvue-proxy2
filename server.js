@@ -15,8 +15,8 @@ function codeChallenge(verifier) {
   return base64url(hash);
 }
 
-const pkce = new Map();
-let tokens = null;
+const pkce = new Map(); // state -> verifier
+let tokens = null;      // latest token response
 
 app.get("/health", (req, res) => res.status(200).send("OK"));
 
@@ -24,6 +24,7 @@ app.get("/auth/fanvue", (req, res) => {
   const verifier = codeVerifier();
   const challenge = codeChallenge(verifier);
   const state = crypto.randomBytes(16).toString("hex");
+
   pkce.set(state, verifier);
 
   const authUrl = new URL("https://auth.fanvue.com/oauth2/auth");
@@ -39,32 +40,43 @@ app.get("/auth/fanvue", (req, res) => {
 });
 
 app.get("/oauth/callback", async (req, res) => {
-  const { code, state } = req.query;
-  const verifier = pkce.get(state);
-  if (!code || !state || !verifier) return res.status(400).send("Invalid callback");
+  try {
+    const { code, state } = req.query;
+    const verifier = pkce.get(state);
 
-  pkce.delete(state);
+    if (!code || !state || !verifier) return res.status(400).send("Invalid callback");
 
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: process.env.OAUTH_CLIENT_ID,
-    client_secret: process.env.OAUTH_CLIENT_SECRET,
-    code,
-    redirect_uri: process.env.OAUTH_REDIRECT_URI,
-    code_verifier: verifier
-  });
+    pkce.delete(state);
 
-  const r = await fetch("https://auth.fanvue.com/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
-  });
+    // IMPORTANT: Fanvue requires client_secret_basic
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code: String(code),
+      redirect_uri: process.env.OAUTH_REDIRECT_URI,
+      code_verifier: verifier
+    });
 
-  const data = await r.json();
-  if (!r.ok) return res.status(500).send(JSON.stringify(data));
+    const basic = Buffer.from(
+      `${process.env.OAUTH_CLIENT_ID}:${process.env.OAUTH_CLIENT_SECRET}`
+    ).toString("base64");
 
-  tokens = data;
-  res.status(200).send("OAuth OK");
+    const r = await fetch("https://auth.fanvue.com/oauth2/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": `Basic ${basic}`
+      },
+      body
+    });
+
+    const data = await r.json();
+    if (!r.ok) return res.status(500).send(JSON.stringify(data));
+
+    tokens = data;
+    return res.status(200).send("OAuth OK");
+  } catch (e) {
+    return res.status(500).send(String(e));
+  }
 });
 
 app.get("/oauth/status", (req, res) => {
@@ -73,7 +85,14 @@ app.get("/oauth/status", (req, res) => {
   res.json({ authed: !!(tokens && tokens.access_token) });
 });
 
-app.post("/webhooks/fanvue", (req, res) => res.sendStatus(200));
+// Webhook (POST-only)
+app.post("/webhooks/fanvue", (req, res) => {
+  console.log("Fanvue webhook received", req.body);
+  res.sendStatus(200);
+});
+
+// Optional: allow browser GET without confusion
+app.get("/webhooks/fanvue", (req, res) => res.status(200).send("OK"));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log("listening on", port));
