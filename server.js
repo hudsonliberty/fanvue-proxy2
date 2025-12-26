@@ -7,6 +7,8 @@ app.get("/health", (req, res) => {
   res.status(200).send("OK");
 });
 
+app.get("/webhooks/fanvue", (req, res) => res.status(200).send("OK"));
+
 app.post("/webhooks/fanvue", (req, res) => {
   console.log("Fanvue webhook received", req.body);
   res.sendStatus(200);
