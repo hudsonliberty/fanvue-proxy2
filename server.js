@@ -1,20 +1,4 @@
-Got it. **Username + profile must show immediately after login.**
-To do that cleanly, the **GUI must be served from the same Render app** (so the OAuth session cookie works). Otherwise cPanel (thesuccessmindset.club) can’t read Render cookies and you’ll keep getting “logged in but nothing shows”.
-
-Below is the **drop-in plumbing** (2 files) that does exactly this:
-
-* ✅ OAuth login
-* ✅ Stores tokens server-side
-* ✅ `/api/me` returns **creator username + avatar**
-* ✅ GUI shows **name + handle + profile image** after login
-
----
-
-## 1) Render `server.js` (DROP-IN)
-
-Replace your Render repo `server.js` with this:
-
-```js
+js
 import express from "express";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
