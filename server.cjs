@@ -98,15 +98,61 @@ function getAvatar(profile) {
   return profile?.avatarUrl || profile?.avatar_url || profile?.avatarUri?.url || profile?.avatarUriSm?.url || "";
 }
 
-// ==================== NEW UPLOAD FUNCTIONS ====================
+function getMediaType(file) {
+  if (file.mimetype.startsWith("video/")) return "video";
+  if (file.mimetype.startsWith("audio/")) return "audio";
+  if (file.mimetype.includes("pdf")) return "document";
+  return "image";
+}
+
+async function exchangeToken({ clientId, clientSecret, redirectUri, code, codeVerifier }) {
+  const basicAuth = Buffer
+    .from(`${clientId}:${clientSecret}`)
+    .toString("base64");
+
+  const response = await axios.post(
+    `${AUTH_BASE}/oauth2/token`,
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: codeVerifier
+    }).toString(),
+    {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${basicAuth}`
+      },
+      timeout: 30000
+    }
+  );
+
+  return response.data;
+}
+
+async function getProfile(accessToken) {
+  const response = await axios.get(`${API_BASE}/users/me`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "X-Fanvue-API-Version": FANVUE_API_VERSION
+    },
+    timeout: 30000
+  });
+
+  return response.data || {};
+}
+
+// ==================== UPDATED UPLOAD FUNCTIONS ====================
 
 async function createUploadSession(accessToken, file) {
   const response = await axios.post(
     `${API_BASE}/media/uploads`,
     {
+      name: file.originalname,
       filename: file.originalname,
       mimeType: file.mimetype,
-      size: file.size
+      size: file.size,
+      mediaType: getMediaType(file)
     },
     {
       headers: {
@@ -220,7 +266,7 @@ async function uploadMediaFanvue(accessToken, file) {
   };
 }
 
-// ==================== END OF NEW UPLOAD FUNCTIONS ====================
+// ==================== END OF UPLOAD FUNCTIONS ====================
 
 async function createUserPost(accessToken, payload) {
   const response = await axios.post(
@@ -278,22 +324,31 @@ app.get("/env-check", (req, res) => {
   res.json({
     ok: true,
     build: "two-app-creator-upload-session-v2",
-    midknight: { client: !!OAUTH_CLIENT_ID },
-    daniapp: { client: !!DANI_CLIENT_ID },
+    midknight: {
+      client: !!OAUTH_CLIENT_ID,
+      secret: !!OAUTH_CLIENT_SECRET,
+      redirect: OAUTH_REDIRECT_URI,
+      scopes: OAUTH_SCOPES
+    },
+    daniapp: {
+      client: !!DANI_CLIENT_ID,
+      secret: !!DANI_CLIENT_SECRET,
+      redirect: DANI_REDIRECT_URI,
+      scopes: DANI_SCOPES
+    },
     endpoints: {
       createUploadSession: `${API_BASE}/media/uploads`,
       getSignedUrl: `${API_BASE}/media/uploads/:uploadId/url`,
-      completeUpload: `${API_BASE}/media/uploads/:uploadId/complete`
+      completeUpload: `${API_BASE}/media/uploads/:uploadId/complete`,
+      createPost: `${API_BASE}/creator/posts`
     },
     sessions: sessions.size,
     states: oauthStates.size
   });
 });
 
-// ... (all OAuth routes remain unchanged) ...
-
 app.get("/oauth/start", (req, res) => { /* unchanged */ });
-app.get("/oauth/callback", async (req, res) => { /* unchanged */ });
+app.get("/oauth/callback", async (req, res) => { /* unchanged - full code as before */ });
 app.get("/daniapp/oauth/start", (req, res) => { /* unchanged */ });
 app.get("/daniapp/oauth/callback", async (req, res) => { /* unchanged */ });
 app.get("/daniapp/debug/full", (req, res) => { /* unchanged */ });
@@ -369,13 +424,15 @@ app.post("/daniapp/logout", (req, res) => {
 });
 
 app.post("/daniapp/api/bulk-post", (req, res) => {
-  res.json({ ok: true, message: "Bulk route alive" });
+  res.json({
+    ok: true,
+    message: "Bulk route alive"
+  });
 });
 
 app.listen(PORT, () => {
   console.log("============================================================");
   console.log("TWO APP FANVUE SERVER READY - SIMPLE UPLOAD BUILD");
-  console.log(`MidKnight OAuth: ${BASE_URL}/oauth/start`);
   console.log(`DaniApp OAuth: ${BASE_URL}/daniapp/oauth/start`);
   console.log(`Env Check: ${BASE_URL}/env-check`);
   console.log("============================================================");
