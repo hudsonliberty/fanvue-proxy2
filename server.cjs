@@ -53,7 +53,10 @@ const sessions = new Map();
 
 function createPkceState(appName) {
   const state = crypto.randomBytes(16).toString("hex");
-  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+
+  const codeVerifier = crypto
+    .randomBytes(32)
+    .toString("base64url");
 
   const codeChallenge = crypto
     .createHash("sha256")
@@ -74,7 +77,9 @@ function createPkceState(appName) {
 }
 
 function makeSession(data) {
-  const sid = crypto.randomBytes(24).toString("hex");
+  const sid = crypto
+    .randomBytes(24)
+    .toString("hex");
 
   sessions.set(sid, {
     ...data,
@@ -85,6 +90,7 @@ function makeSession(data) {
 }
 
 function getSession(req, type = "dani") {
+
   const sid =
     type === "midknight"
       ? (
@@ -144,6 +150,7 @@ async function exchangeToken({
 }
 
 async function getProfile(accessToken) {
+
   const response = await axios.get(
     "https://api.fanvue.com/users/me",
     {
@@ -202,7 +209,10 @@ async function uploadMediaAndCreatePost({
     console.log("UPLOAD SESSION STATUS:", startRes.status);
     console.log("UPLOAD SESSION DATA:", startRes.data);
 
-    if (startRes.status !== 200 && startRes.status !== 201) {
+    if (
+      startRes.status !== 200 &&
+      startRes.status !== 201
+    ) {
       throw new Error(
         `Upload session failed: ${startRes.status} ${JSON.stringify(startRes.data)}`
       );
@@ -237,17 +247,31 @@ async function uploadMediaAndCreatePost({
     );
 
     console.log("SIGNED URL STATUS:", signedRes.status);
+    console.log("SIGNED URL DATA:", signedRes.data);
 
-    const signedUrl =
-      signedRes.data?.url ||
-      signedRes.data?.signedUrl;
+    // ==================================================
+    // FIX FOR STRING URL RESPONSE
+    // ==================================================
+
+    let signedUrl = null;
+
+    if (typeof signedRes.data === "string") {
+      signedUrl = signedRes.data;
+    } else {
+      signedUrl =
+        signedRes.data?.url ||
+        signedRes.data?.signedUrl ||
+        signedRes.data?.uploadUrl;
+    }
 
     if (!signedUrl) {
-      throw new Error("No signed upload URL received");
+      throw new Error(
+        `No signed upload URL received: ${JSON.stringify(signedRes.data)}`
+      );
     }
 
     // ==================================================
-    // 3. UPLOAD FILE TO S3
+    // 3. PUT FILE TO S3
     // ==================================================
 
     const putRes = await axios.put(
@@ -264,10 +288,15 @@ async function uploadMediaAndCreatePost({
       }
     );
 
-    console.log("S3 PUT STATUS:", putRes.status);
+    console.log("PUT STATUS:", putRes.status);
 
-    if (putRes.status < 200 || putRes.status >= 300) {
-      throw new Error(`S3 upload failed: ${putRes.status}`);
+    if (
+      putRes.status < 200 ||
+      putRes.status >= 300
+    ) {
+      throw new Error(
+        `S3 upload failed: ${putRes.status}`
+      );
     }
 
     const etag =
@@ -312,7 +341,10 @@ async function uploadMediaAndCreatePost({
       mediaUuids: [mediaUuid]
     };
 
-    if (price && Number(price) > 0) {
+    if (
+      price &&
+      Number(price) > 0
+    ) {
       postPayload.price = Number(price);
     }
 
@@ -342,7 +374,10 @@ async function uploadMediaAndCreatePost({
     console.log("POST STATUS:", postRes.status);
     console.log("POST DATA:", postRes.data);
 
-    if (postRes.status < 200 || postRes.status >= 300) {
+    if (
+      postRes.status < 200 ||
+      postRes.status >= 300
+    ) {
       throw new Error(
         `Post creation failed: ${postRes.status} ${JSON.stringify(postRes.data)}`
       );
@@ -385,11 +420,26 @@ app.get("/health", (req, res) => {
   res.send("ok");
 });
 
-app.get("/debug", (req, res) => {
+app.get("/env-check", (req, res) => {
   res.json({
     ok: true,
+    build: "fanvue-signed-url-fix-final",
     sessions: sessions.size,
-    states: oauthStates.size
+    states: oauthStates.size,
+    apiVersion: FANVUE_API_VERSION
+  });
+});
+
+app.get("/daniapp/debug/full", (req, res) => {
+
+  const session = getSession(req, "dani");
+
+  res.json({
+    ok: true,
+    connected: !!session?.accessToken,
+    sessionExists: !!session,
+    profile: session?.profile || null,
+    sessions: sessions.size
   });
 });
 
@@ -408,6 +458,7 @@ app.get("/daniapp/oauth/start", (req, res) => {
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("client_id", DANI_CLIENT_ID);
   authUrl.searchParams.set("redirect_uri", DANI_REDIRECT_URI);
+
   authUrl.searchParams.set(
     "scope",
     "openid offline_access write:post write:media read:self"
@@ -563,7 +614,7 @@ app.get("/midknight/oauth/callback", async (req, res) => {
 });
 
 // ======================================================
-// POST ROUTE
+// SINGLE POST
 // ======================================================
 
 app.post(
