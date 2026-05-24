@@ -10,32 +10,28 @@ const FormData = require("form-data");
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const BASE_URL = (process.env.BASE_URL || "https://fanvue-proxy2.onrender.com").trim();
+const BASE_URL = process.env.BASE_URL || "https://fanvue-proxy2.onrender.com";
 const FRONTEND_ORIGIN = "https://thesuccessmindset.club";
 
-const OAUTH_CLIENT_ID = (process.env.OAUTH_CLIENT_ID || "").trim();
-const OAUTH_CLIENT_SECRET = (process.env.OAUTH_CLIENT_SECRET || "").trim();
+const AUTH_BASE = process.env.OAUTH_ISSUER_BASE_URL || "https://auth.fanvue.com";
+const API_BASE = process.env.API_BASE_URL || "https://api.fanvue.com";
+
+const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID || "";
+const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || "";
 const OAUTH_REDIRECT_URI =
-  (process.env.OAUTH_REDIRECT_URI || `${BASE_URL}/api/oauth/callback`).trim();
+  process.env.OAUTH_REDIRECT_URI || `${BASE_URL}/oauth/callback`;
 const OAUTH_SCOPES =
-  (process.env.OAUTH_SCOPES || "read:self read:chat read:creator read:fan write:chat").trim();
+  process.env.OAUTH_SCOPES || "read:self read:chat read:creator read:fan write:chat";
 
-const DANI_CLIENT_ID =
-  (process.env.DANI_CLIENT_ID || process.env.OAUTH_CLIENT_ID || "").trim();
-const DANI_CLIENT_SECRET =
-  (process.env.DANI_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET || "").trim();
+const DANI_CLIENT_ID = process.env.DANI_CLIENT_ID || "";
+const DANI_CLIENT_SECRET = process.env.DANI_CLIENT_SECRET || "";
 const DANI_REDIRECT_URI =
-  (process.env.DANI_REDIRECT_URI || `${BASE_URL}/daniapp/oauth/callback`).trim();
+  process.env.DANI_REDIRECT_URI || `${BASE_URL}/daniapp/oauth/callback`;
 const DANI_SCOPES =
-  (process.env.DANI_SCOPES || "openid offline_access write:post write:media read:self").trim();
-
-const AUTH_BASE = (process.env.OAUTH_ISSUER_BASE_URL || "https://auth.fanvue.com").trim();
-const API_BASE = (process.env.API_BASE_URL || "https://api.fanvue.com").trim();
-const FANVUE_API_VERSION = "2025-06-26";
+  process.env.DANI_SCOPES || "openid offline_access write:post write:media read:self";
 
 const sessions = new Map();
 const oauthStates = new Map();
-const webhookEvents = [];
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -45,15 +41,7 @@ const upload = multer({
 app.set("trust proxy", true);
 
 app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (
-      origin === FRONTEND_ORIGIN ||
-      origin === "https://www.thesuccessmindset.club" ||
-      origin === BASE_URL
-    ) return cb(null, true);
-    return cb(null, true);
-  },
+  origin: true,
   credentials: true,
   allowedHeaders: ["Content-Type", "x-dani-session", "x-mvp-session"],
   methods: ["GET", "POST", "OPTIONS"]
@@ -80,25 +68,29 @@ function getSession(req) {
     req.get("x-mvp-session") ||
     req.query.sid ||
     "";
-  return { sid, session: sid ? sessions.get(sid) : null };
+
+  return {
+    sid,
+    session: sid ? sessions.get(sid) : null
+  };
 }
 
-function safeProfileName(p) {
-  return p?.displayName || p?.name || p?.username || p?.handle || "Fanvue Creator";
+function getName(profile) {
+  return profile?.displayName || profile?.name || profile?.username || profile?.handle || "Fanvue Creator";
 }
 
-function safeHandle(p) {
-  const raw = p?.handle || p?.username || "";
+function getHandle(profile) {
+  const raw = profile?.handle || profile?.username || "";
   return raw ? "@" + String(raw).replace(/^@/, "") : "";
 }
 
-function safeAvatar(p) {
-  return p?.avatarUrl || p?.avatar_url || p?.avatarUri?.url || p?.avatarUriSm?.url || "";
+function getAvatar(profile) {
+  return profile?.avatarUrl || profile?.avatar_url || profile?.avatarUri?.url || "";
 }
 
 async function exchangeToken({ clientId, clientSecret, redirectUri, code }) {
   const response = await axios.post(
-    `${AUTH_BASE}/oauth/token`,
+    `${AUTH_BASE}/oauth2/token`,
     new URLSearchParams({
       grant_type: "authorization_code",
       client_id: clientId,
@@ -119,7 +111,7 @@ async function getProfile(accessToken) {
   const response = await axios.get(`${API_BASE}/users/me`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      "X-Fanvue-API-Version": FANVUE_API_VERSION
+      "X-Fanvue-API-Version": "2025-06-26"
     },
     timeout: 30000
   });
@@ -140,7 +132,7 @@ async function uploadMedia(accessToken, file) {
   const response = await axios.post(`${API_BASE}/media`, form, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      "X-Fanvue-API-Version": FANVUE_API_VERSION,
+      "X-Fanvue-API-Version": "2025-06-26",
       ...form.getHeaders()
     },
     timeout: 120000,
@@ -151,11 +143,11 @@ async function uploadMedia(accessToken, file) {
   return response.data;
 }
 
-async function createPost(accessToken, body) {
-  const response = await axios.post(`${API_BASE}/posts`, body, {
+async function createPost(accessToken, payload) {
+  const response = await axios.post(`${API_BASE}/posts`, payload, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      "X-Fanvue-API-Version": FANVUE_API_VERSION,
+      "X-Fanvue-API-Version": "2025-06-26",
       "Content-Type": "application/json"
     },
     timeout: 30000
@@ -167,22 +159,23 @@ async function createPost(accessToken, body) {
 app.get("/", (req, res) => {
   res.send(`
     <body style="background:#111;color:white;font-family:Arial;padding:40px">
-      <h1>MidKnight VIP Services OAuth Server Running</h1>
-      <p><a href="/oauth/start" style="color:#ff1493">MidKnight Login</a></p>
-      <p><a href="/daniapp/oauth/start" style="color:#ff1493">DaniApp Login</a></p>
-      <p><a href="/env-check" style="color:#ff1493">Env Check</a></p>
+      <h1>Fanvue Two-App Server Running</h1>
+      <p><a style="color:#ff1493" href="/oauth/start">MidKnight Login</a></p>
+      <p><a style="color:#ff1493" href="/daniapp/oauth/start">DaniApp Login</a></p>
+      <p><a style="color:#ff1493" href="/env-check">Env Check</a></p>
     </body>
   `);
 });
 
-app.get("/health", (req, res) => res.send("ok"));
+app.get("/health", (req, res) => {
+  res.send("ok");
+});
 
 app.get("/env-check", (req, res) => {
   res.json({
     ok: true,
-    build: "two-app-functional-server",
-    baseUrl: BASE_URL,
-    mvp: {
+    build: "two-app-callback-fixed",
+    midknight: {
       client: !!OAUTH_CLIENT_ID,
       secret: !!OAUTH_CLIENT_SECRET,
       redirect: OAUTH_REDIRECT_URI,
@@ -199,30 +192,38 @@ app.get("/env-check", (req, res) => {
   });
 });
 
-/* MIDKNIGHT MVP */
+/* MIDKNIGHT */
 
 app.get("/oauth/start", (req, res) => {
-  const state = makeState("mvp");
-  const url = new URL(`${AUTH_BASE}/oauth/authorize`);
+  const state = makeState("midknight");
 
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", OAUTH_CLIENT_ID);
-  url.searchParams.set("redirect_uri", OAUTH_REDIRECT_URI);
-  url.searchParams.set("scope", OAUTH_SCOPES);
-  url.searchParams.set("state", state);
+  const authUrl = new URL(`${AUTH_BASE}/oauth2/auth`);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", OAUTH_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", OAUTH_REDIRECT_URI);
+  authUrl.searchParams.set("scope", OAUTH_SCOPES);
+  authUrl.searchParams.set("state", state);
 
-  res.redirect(url.toString());
+  res.redirect(authUrl.toString());
 });
 
-app.get("/api/oauth/callback", async (req, res) => {
+app.get("/oauth/callback", async (req, res) => {
   try {
-    const { code, state, error } = req.query;
+    const { code, state, error, error_description } = req.query;
 
-    if (error) return res.status(400).send(String(error));
-    if (!code || !state) return res.status(400).send("Missing OAuth code/state");
+    if (error) {
+      return res.status(400).send(`OAuth error: ${error} ${error_description || ""}`);
+    }
 
-    const st = oauthStates.get(state);
-    if (!st || st.appName !== "mvp") return res.status(400).send("Invalid state");
+    if (!code || !state) {
+      return res.status(400).send("Missing code/state");
+    }
+
+    const stored = oauthStates.get(state);
+
+    if (!stored || stored.appName !== "midknight") {
+      return res.status(400).send("Invalid MidKnight state");
+    }
 
     oauthStates.delete(state);
 
@@ -234,12 +235,13 @@ app.get("/api/oauth/callback", async (req, res) => {
     });
 
     let profile = {};
+
     try {
       profile = await getProfile(tokens.access_token);
     } catch {}
 
     const sid = makeSession({
-      app: "mvp",
+      app: "midknight",
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token || "",
       profile
@@ -253,47 +255,57 @@ app.get("/api/oauth/callback", async (req, res) => {
       <pre>${JSON.stringify(profile, null, 2)}</pre>
     `);
   } catch (err) {
-    console.error("MVP OAuth error:", err?.response?.data || err.message);
-    res.status(500).send("OAuth callback failed");
+    console.error("MidKnight OAuth failed:", err?.response?.data || err.message);
+    res.status(500).send("MidKnight OAuth failed");
   }
 });
 
 app.get("/api/me", (req, res) => {
   const { session } = getSession(req);
-  if (!session) return res.status(401).json({ ok: false, error: "Not authenticated" });
-  res.json({ ok: true, app: session.app, profile: session.profile || {} });
-});
 
-app.post("/api/logout", (req, res) => {
-  const { sid } = getSession(req);
-  if (sid) sessions.delete(sid);
-  res.json({ ok: true });
+  if (!session) {
+    return res.status(401).json({ ok: false, error: "Not authenticated" });
+  }
+
+  res.json({
+    ok: true,
+    app: session.app,
+    profile: session.profile || {}
+  });
 });
 
 /* DANIAPP */
 
 app.get("/daniapp/oauth/start", (req, res) => {
   const state = makeState("daniapp");
-  const url = new URL(`${AUTH_BASE}/oauth/authorize`);
 
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", DANI_CLIENT_ID);
-  url.searchParams.set("redirect_uri", DANI_REDIRECT_URI);
-  url.searchParams.set("scope", DANI_SCOPES);
-  url.searchParams.set("state", state);
+  const authUrl = new URL(`${AUTH_BASE}/oauth2/auth`);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", DANI_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", DANI_REDIRECT_URI);
+  authUrl.searchParams.set("scope", DANI_SCOPES);
+  authUrl.searchParams.set("state", state);
 
-  res.redirect(url.toString());
+  res.redirect(authUrl.toString());
 });
 
 app.get("/daniapp/oauth/callback", async (req, res) => {
   try {
-    const { code, state, error } = req.query;
+    const { code, state, error, error_description } = req.query;
 
-    if (error) return res.status(400).send(String(error));
-    if (!code || !state) return res.status(400).send("Missing OAuth code/state");
+    if (error) {
+      return res.status(400).send(`DaniApp OAuth error: ${error} ${error_description || ""}`);
+    }
 
-    const st = oauthStates.get(state);
-    if (!st || st.appName !== "daniapp") return res.status(400).send("Invalid state");
+    if (!code || !state) {
+      return res.status(400).send("Missing code/state");
+    }
+
+    const stored = oauthStates.get(state);
+
+    if (!stored || stored.appName !== "daniapp") {
+      return res.status(400).send("Invalid DaniApp state");
+    }
 
     oauthStates.delete(state);
 
@@ -305,6 +317,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
     });
 
     let profile = {};
+
     try {
       profile = await getProfile(tokens.access_token);
     } catch {}
@@ -316,21 +329,22 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
       profile
     });
 
-    const name = encodeURIComponent(safeProfileName(profile));
-    const handle = encodeURIComponent(safeHandle(profile) || "@dani-rich");
-    const avatar = encodeURIComponent(safeAvatar(profile));
+    const name = encodeURIComponent(getName(profile));
+    const handle = encodeURIComponent(getHandle(profile) || "@dani-rich");
+    const avatar = encodeURIComponent(getAvatar(profile));
 
     res.redirect(
       `${FRONTEND_ORIGIN}/daniapp/index.html?connected=1&sid=${sid}&name=${name}&handle=${handle}&avatar=${avatar}`
     );
   } catch (err) {
-    console.error("Dani OAuth error:", err?.response?.data || err.message);
+    console.error("DaniApp OAuth failed:", err?.response?.data || err.message);
     res.status(500).send("DaniApp OAuth failed");
   }
 });
 
 app.get("/daniapp/debug/full", (req, res) => {
   const { sid, session } = getSession(req);
+
   res.json({
     ok: true,
     sidPresent: !!sid,
@@ -338,21 +352,32 @@ app.get("/daniapp/debug/full", (req, res) => {
     connected: !!session?.accessToken,
     app: session?.app || null,
     profile: session?.profile || null,
-    sessions: sessions.size
+    sessions: sessions.size,
+    states: oauthStates.size
   });
 });
 
 app.get("/daniapp/api/me", (req, res) => {
   const { session } = getSession(req);
+
   if (!session || session.app !== "daniapp") {
     return res.status(401).json({ ok: false, error: "Not connected" });
   }
-  res.json({ ok: true, profile: session.profile || {} });
+
+  res.json({
+    ok: true,
+    connected: true,
+    profile: session.profile || {}
+  });
 });
 
 app.post("/daniapp/logout", (req, res) => {
   const { sid } = getSession(req);
-  if (sid) sessions.delete(sid);
+
+  if (sid) {
+    sessions.delete(sid);
+  }
+
   res.json({ ok: true });
 });
 
@@ -368,11 +393,20 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
     }
 
     if (!req.file) {
-      return res.status(400).json({ ok: false, error: "No media uploaded" });
+      return res.status(400).json({
+        ok: false,
+        error: "No media uploaded"
+      });
     }
 
     const media = await uploadMedia(session.accessToken, req.file);
-    const mediaId = media?.uuid || media?.id || media?.data?.uuid || media?.data?.id;
+
+    const mediaId =
+      media?.uuid ||
+      media?.id ||
+      media?.mediaUuid ||
+      media?.data?.uuid ||
+      media?.data?.id;
 
     if (!mediaId) {
       return res.status(500).json({
@@ -382,7 +416,7 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
       });
     }
 
-    const postPayload = {
+    const payload = {
       caption: String(req.body.caption || "").trim(),
       audience: req.body.audience || "followers-and-subscribers",
       price: Number(req.body.price || 0),
@@ -390,10 +424,10 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
     };
 
     if (req.body.postNow !== "true" && req.body.scheduleTime) {
-      postPayload.scheduleTime = req.body.scheduleTime;
+      payload.scheduleTime = req.body.scheduleTime;
     }
 
-    const post = await createPost(session.accessToken, postPayload);
+    const post = await createPost(session.accessToken, payload);
 
     res.json({
       ok: true,
@@ -402,7 +436,8 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
       post
     });
   } catch (err) {
-    console.error("Dani post error:", err?.response?.data || err.message);
+    console.error("Dani post failed:", err?.response?.data || err.message);
+
     res.status(500).json({
       ok: false,
       error: "Fanvue post failed",
@@ -412,32 +447,19 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
 });
 
 app.post("/daniapp/api/bulk-post", (req, res) => {
-  res.json({ ok: true, message: "Bulk route alive" });
-});
-
-/* WEBHOOK EVENTS */
-
-app.post("/webhooks/fanvue", (req, res) => {
-  webhookEvents.unshift({
-    receivedAt: new Date().toISOString(),
-    body: req.body
+  res.json({
+    ok: true,
+    message: "Bulk route alive"
   });
-  if (webhookEvents.length > 100) webhookEvents.length = 100;
-  res.send("ok");
-});
-
-app.get("/api/events", (req, res) => {
-  res.json({ count: webhookEvents.length, events: webhookEvents });
 });
 
 app.listen(PORT, () => {
   console.log("============================================================");
-  console.log("FULL TWO-APP FANVUE SERVER READY");
-  console.log(`Port: ${PORT}`);
-  console.log(`MVP OAuth: ${BASE_URL}/oauth/start`);
-  console.log(`MVP Callback: ${OAUTH_REDIRECT_URI}`);
-  console.log(`Dani OAuth: ${BASE_URL}/daniapp/oauth/start`);
-  console.log(`Dani Callback: ${DANI_REDIRECT_URI}`);
+  console.log("TWO APP FANVUE SERVER READY");
+  console.log(`MidKnight OAuth: ${BASE_URL}/oauth/start`);
+  console.log(`MidKnight Callback: ${OAUTH_REDIRECT_URI}`);
+  console.log(`DaniApp OAuth: ${BASE_URL}/daniapp/oauth/start`);
+  console.log(`DaniApp Callback: ${DANI_REDIRECT_URI}`);
   console.log(`Env Check: ${BASE_URL}/env-check`);
   console.log("============================================================");
 });
