@@ -26,9 +26,21 @@ const FANVUE_API_VERSION = "2025-06-26";
 app.set("trust proxy", true);
 
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "https://thesuccessmindset.club");
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Allow-Headers", "Content-Type, x-dani-session, x-midknight-session");
+
+  res.header(
+    "Access-Control-Allow-Origin",
+    "https://thesuccessmindset.club"
+  );
+
+  res.header(
+    "Access-Control-Allow-Credentials",
+    "true"
+  );
+
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, x-dani-session, x-midknight-session"
+  );
 
   if (req.method === "OPTIONS") {
     return res.sendStatus(204);
@@ -38,7 +50,10 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(express.urlencoded({
+  extended: true,
+  limit: "50mb"
+}));
 
 // ======================================================
 // STORES
@@ -52,7 +67,10 @@ const sessions = new Map();
 // ======================================================
 
 function createPkceState(appName) {
-  const state = crypto.randomBytes(16).toString("hex");
+
+  const state = crypto
+    .randomBytes(16)
+    .toString("hex");
 
   const codeVerifier = crypto
     .randomBytes(32)
@@ -77,6 +95,7 @@ function createPkceState(appName) {
 }
 
 function makeSession(data) {
+
   const sid = crypto
     .randomBytes(24)
     .toString("hex");
@@ -110,8 +129,15 @@ function getSession(req, type = "dani") {
 }
 
 function getMediaType(mimetype) {
-  if (mimetype.startsWith("video/")) return "video";
-  if (mimetype.startsWith("audio/")) return "audio";
+
+  if (mimetype.startsWith("video/")) {
+    return "video";
+  }
+
+  if (mimetype.startsWith("audio/")) {
+    return "audio";
+  }
+
   return "image";
 }
 
@@ -166,7 +192,7 @@ async function getProfile(accessToken) {
 }
 
 // ======================================================
-// UPLOAD + POST
+// MAIN UPLOAD + POST FUNCTION
 // ======================================================
 
 async function uploadMediaAndCreatePost({
@@ -186,7 +212,7 @@ async function uploadMediaAndCreatePost({
     console.log("=================================================");
 
     // ==================================================
-    // 1. CREATE UPLOAD SESSION
+    // CREATE UPLOAD SESSION
     // ==================================================
 
     const startRes = await axios.post(
@@ -213,6 +239,7 @@ async function uploadMediaAndCreatePost({
       startRes.status !== 200 &&
       startRes.status !== 201
     ) {
+
       throw new Error(
         `Upload session failed: ${startRes.status} ${JSON.stringify(startRes.data)}`
       );
@@ -228,11 +255,13 @@ async function uploadMediaAndCreatePost({
       startRes.data.id;
 
     if (!mediaUuid || !uploadId) {
-      throw new Error("Missing mediaUuid or uploadId");
+      throw new Error(
+        "Missing mediaUuid or uploadId"
+      );
     }
 
     // ==================================================
-    // 2. GET SIGNED URL
+    // GET SIGNED URL
     // ==================================================
 
     const signedRes = await axios.get(
@@ -249,15 +278,14 @@ async function uploadMediaAndCreatePost({
     console.log("SIGNED URL STATUS:", signedRes.status);
     console.log("SIGNED URL DATA:", signedRes.data);
 
-    // ==================================================
-    // FIX FOR STRING URL RESPONSE
-    // ==================================================
-
     let signedUrl = null;
 
     if (typeof signedRes.data === "string") {
+
       signedUrl = signedRes.data;
+
     } else {
+
       signedUrl =
         signedRes.data?.url ||
         signedRes.data?.signedUrl ||
@@ -265,13 +293,14 @@ async function uploadMediaAndCreatePost({
     }
 
     if (!signedUrl) {
+
       throw new Error(
         `No signed upload URL received: ${JSON.stringify(signedRes.data)}`
       );
     }
 
     // ==================================================
-    // 3. PUT FILE TO S3
+    // PUT FILE TO S3
     // ==================================================
 
     const putRes = await axios.put(
@@ -294,6 +323,7 @@ async function uploadMediaAndCreatePost({
       putRes.status < 200 ||
       putRes.status >= 300
     ) {
+
       throw new Error(
         `S3 upload failed: ${putRes.status}`
       );
@@ -305,7 +335,7 @@ async function uploadMediaAndCreatePost({
       "1";
 
     // ==================================================
-    // 4. COMPLETE UPLOAD
+    // COMPLETE UPLOAD
     // ==================================================
 
     const completeRes = await axios.patch(
@@ -314,7 +344,7 @@ async function uploadMediaAndCreatePost({
         parts: [
           {
             partNumber: 1,
-            etag
+            etag: etag
           }
         ]
       },
@@ -332,12 +362,14 @@ async function uploadMediaAndCreatePost({
     console.log("COMPLETE DATA:", completeRes.data);
 
     // ==================================================
-    // 5. CREATE POST
+    // CREATE POST
     // ==================================================
 
     const postPayload = {
       text: String(caption || "").trim(),
-      audience: audience || "followers-and-subscribers",
+      audience:
+        audience ||
+        "followers-and-subscribers",
       mediaUuids: [mediaUuid]
     };
 
@@ -345,6 +377,7 @@ async function uploadMediaAndCreatePost({
       price &&
       Number(price) > 0
     ) {
+
       postPayload.price = Number(price);
     }
 
@@ -352,6 +385,7 @@ async function uploadMediaAndCreatePost({
       postNow !== "true" &&
       scheduleTime
     ) {
+
       postPayload.publishAt =
         new Date(scheduleTime).toISOString();
     }
@@ -378,6 +412,7 @@ async function uploadMediaAndCreatePost({
       postRes.status < 200 ||
       postRes.status >= 300
     ) {
+
       throw new Error(
         `Post creation failed: ${postRes.status} ${JSON.stringify(postRes.data)}`
       );
@@ -398,9 +433,12 @@ async function uploadMediaAndCreatePost({
     console.error("=================================================");
 
     if (err.response) {
+
       console.error("STATUS:", err.response.status);
       console.error("DATA:", err.response.data);
+
     } else {
+
       console.error(err.message);
     }
 
@@ -421,9 +459,10 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/env-check", (req, res) => {
+
   res.json({
     ok: true,
-    build: "fanvue-signed-url-fix-final",
+    build: "fanvue-full-bulk-final",
     sessions: sessions.size,
     states: oauthStates.size,
     apiVersion: FANVUE_API_VERSION
@@ -455,83 +494,122 @@ app.get("/daniapp/oauth/start", (req, res) => {
     "https://auth.fanvue.com/oauth2/auth"
   );
 
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("client_id", DANI_CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", DANI_REDIRECT_URI);
+  authUrl.searchParams.set(
+    "response_type",
+    "code"
+  );
+
+  authUrl.searchParams.set(
+    "client_id",
+    DANI_CLIENT_ID
+  );
+
+  authUrl.searchParams.set(
+    "redirect_uri",
+    DANI_REDIRECT_URI
+  );
 
   authUrl.searchParams.set(
     "scope",
     "openid offline_access write:post write:media read:self"
   );
 
-  authUrl.searchParams.set("state", pkce.state);
-  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
-  authUrl.searchParams.set("code_challenge_method", "S256");
+  authUrl.searchParams.set(
+    "state",
+    pkce.state
+  );
+
+  authUrl.searchParams.set(
+    "code_challenge",
+    pkce.codeChallenge
+  );
+
+  authUrl.searchParams.set(
+    "code_challenge_method",
+    "S256"
+  );
 
   res.redirect(authUrl.toString());
 });
 
-app.get("/daniapp/oauth/callback", async (req, res) => {
+app.get(
+  "/daniapp/oauth/callback",
+  async (req, res) => {
 
-  try {
+    try {
 
-    const { code, state, error } = req.query;
+      const {
+        code,
+        state,
+        error
+      } = req.query;
 
-    if (error) {
-      return res.status(400).send(error);
+      if (error) {
+        return res.status(400).send(error);
+      }
+
+      const stored =
+        oauthStates.get(state);
+
+      if (!stored) {
+        return res.status(400).send("Invalid state");
+      }
+
+      oauthStates.delete(state);
+
+      const tokenData =
+        await exchangeToken({
+          clientId: DANI_CLIENT_ID,
+          clientSecret: DANI_CLIENT_SECRET,
+          redirectUri: DANI_REDIRECT_URI,
+          code,
+          codeVerifier: stored.codeVerifier
+        });
+
+      const profile =
+        await getProfile(
+          tokenData.access_token
+        );
+
+      const sid = makeSession({
+        type: "dani",
+        accessToken:
+          tokenData.access_token,
+        profile
+      });
+
+      const name =
+        encodeURIComponent(
+          profile.displayName ||
+          "Dani Richmond"
+        );
+
+      const handle =
+        encodeURIComponent(
+          `@${(profile.handle || "")
+            .replace("@", "")}`
+        );
+
+      const avatar =
+        encodeURIComponent(
+          profile.avatarUrl || ""
+        );
+
+      res.redirect(
+        `https://thesuccessmindset.club/daniapp/index.html?connected=1&sid=${sid}&name=${name}&handle=${handle}&avatar=${avatar}`
+      );
+
+    } catch (err) {
+
+      console.error(
+        err?.response?.data ||
+        err.message
+      );
+
+      res.status(500).send("OAuth failed");
     }
-
-    const stored = oauthStates.get(state);
-
-    if (!stored) {
-      return res.status(400).send("Invalid state");
-    }
-
-    oauthStates.delete(state);
-
-    const tokenData = await exchangeToken({
-      clientId: DANI_CLIENT_ID,
-      clientSecret: DANI_CLIENT_SECRET,
-      redirectUri: DANI_REDIRECT_URI,
-      code,
-      codeVerifier: stored.codeVerifier
-    });
-
-    const profile = await getProfile(
-      tokenData.access_token
-    );
-
-    const sid = makeSession({
-      type: "dani",
-      accessToken: tokenData.access_token,
-      profile
-    });
-
-    const name = encodeURIComponent(
-      profile.displayName || "Dani Richmond"
-    );
-
-    const handle = encodeURIComponent(
-      `@${(profile.handle || "").replace("@", "")}`
-    );
-
-    const avatar = encodeURIComponent(
-      profile.avatarUrl || ""
-    );
-
-    res.redirect(
-      `https://thesuccessmindset.club/daniapp/index.html?connected=1&sid=${sid}&name=${name}&handle=${handle}&avatar=${avatar}`
-    );
-
-  } catch (err) {
-
-    console.error(
-      err?.response?.data || err.message
-    );
-
-    res.status(500).send("OAuth failed");
   }
-});
+);
 
 // ======================================================
 // MIDKNIGHT OAUTH
@@ -539,79 +617,118 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
 
 app.get("/midknight/oauth/start", (req, res) => {
 
-  const pkce = createPkceState("midknight");
+  const pkce =
+    createPkceState("midknight");
 
   const authUrl = new URL(
     "https://auth.fanvue.com/oauth2/auth"
   );
 
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("client_id", MIDKNIGHT_CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", MIDKNIGHT_REDIRECT_URI);
+  authUrl.searchParams.set(
+    "response_type",
+    "code"
+  );
+
+  authUrl.searchParams.set(
+    "client_id",
+    MIDKNIGHT_CLIENT_ID
+  );
+
+  authUrl.searchParams.set(
+    "redirect_uri",
+    MIDKNIGHT_REDIRECT_URI
+  );
 
   authUrl.searchParams.set(
     "scope",
     "openid offline_access write:post write:media read:self"
   );
 
-  authUrl.searchParams.set("state", pkce.state);
-  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
-  authUrl.searchParams.set("code_challenge_method", "S256");
+  authUrl.searchParams.set(
+    "state",
+    pkce.state
+  );
+
+  authUrl.searchParams.set(
+    "code_challenge",
+    pkce.codeChallenge
+  );
+
+  authUrl.searchParams.set(
+    "code_challenge_method",
+    "S256"
+  );
 
   res.redirect(authUrl.toString());
 });
 
-app.get("/midknight/oauth/callback", async (req, res) => {
+app.get(
+  "/midknight/oauth/callback",
+  async (req, res) => {
 
-  try {
+    try {
 
-    const { code, state, error } = req.query;
+      const {
+        code,
+        state,
+        error
+      } = req.query;
 
-    if (error) {
-      return res.status(400).send(error);
+      if (error) {
+        return res.status(400).send(error);
+      }
+
+      const stored =
+        oauthStates.get(state);
+
+      if (!stored) {
+        return res.status(400).send("Invalid state");
+      }
+
+      oauthStates.delete(state);
+
+      const tokenData =
+        await exchangeToken({
+          clientId:
+            MIDKNIGHT_CLIENT_ID,
+          clientSecret:
+            MIDKNIGHT_CLIENT_SECRET,
+          redirectUri:
+            MIDKNIGHT_REDIRECT_URI,
+          code,
+          codeVerifier:
+            stored.codeVerifier
+        });
+
+      const profile =
+        await getProfile(
+          tokenData.access_token
+        );
+
+      const sid = makeSession({
+        type: "midknight",
+        accessToken:
+          tokenData.access_token,
+        profile
+      });
+
+      res.json({
+        ok: true,
+        sid,
+        profile
+      });
+
+    } catch (err) {
+
+      console.error(
+        err?.response?.data ||
+        err.message
+      );
+
+      res.status(500).send("OAuth failed");
     }
-
-    const stored = oauthStates.get(state);
-
-    if (!stored) {
-      return res.status(400).send("Invalid state");
-    }
-
-    oauthStates.delete(state);
-
-    const tokenData = await exchangeToken({
-      clientId: MIDKNIGHT_CLIENT_ID,
-      clientSecret: MIDKNIGHT_CLIENT_SECRET,
-      redirectUri: MIDKNIGHT_REDIRECT_URI,
-      code,
-      codeVerifier: stored.codeVerifier
-    });
-
-    const profile = await getProfile(
-      tokenData.access_token
-    );
-
-    const sid = makeSession({
-      type: "midknight",
-      accessToken: tokenData.access_token,
-      profile
-    });
-
-    res.json({
-      ok: true,
-      sid,
-      profile
-    });
-
-  } catch (err) {
-
-    console.error(
-      err?.response?.data || err.message
-    );
-
-    res.status(500).send("OAuth failed");
   }
-});
+);
 
 // ======================================================
 // SINGLE POST
@@ -624,9 +741,11 @@ app.post(
 
     try {
 
-      const session = getSession(req, "dani");
+      const session =
+        getSession(req, "dani");
 
       if (!session?.accessToken) {
+
         return res.status(401).json({
           ok: false,
           error: "Fanvue not connected"
@@ -634,6 +753,7 @@ app.post(
       }
 
       if (!req.file) {
+
         return res.status(400).json({
           ok: false,
           error: "No media file"
@@ -642,18 +762,25 @@ app.post(
 
       const result =
         await uploadMediaAndCreatePost({
-          accessToken: session.accessToken,
+          accessToken:
+            session.accessToken,
           file: req.file,
-          caption: req.body.caption,
-          audience: req.body.audience,
-          price: req.body.price,
-          postNow: req.body.postNow,
-          scheduleTime: req.body.scheduleTime
+          caption:
+            req.body.caption,
+          audience:
+            req.body.audience,
+          price:
+            req.body.price,
+          postNow:
+            req.body.postNow,
+          scheduleTime:
+            req.body.scheduleTime
         });
 
       res.json({
         ok: true,
-        message: "Post published successfully.",
+        message:
+          "Post published successfully.",
         result
       });
 
@@ -680,71 +807,192 @@ app.post(
 
     try {
 
-      const session = getSession(req, "dani");
+      const session =
+        getSession(req, "dani");
 
       if (!session?.accessToken) {
+
         return res.status(401).json({
           ok: false,
           error: "Fanvue not connected"
         });
       }
 
-      if (!req.files?.length) {
+      if (
+        !req.files ||
+        !req.files.length
+      ) {
+
         return res.status(400).json({
           ok: false,
-          error: "No media files"
+          error:
+            "No media files uploaded"
         });
       }
 
+      console.log("=================================================");
+      console.log("🚀 BULK UPLOAD START");
+      console.log("=================================================");
+      console.log(
+        "FILES:",
+        req.files.length
+      );
+
       const results = [];
 
-      for (const file of req.files) {
+      for (
+        let i = 0;
+        i < req.files.length;
+        i++
+      ) {
+
+        const file = req.files[i];
+
+        console.log("=================================================");
+        console.log(
+          `📦 FILE ${i + 1}/${req.files.length}`
+        );
+
+        console.log(
+          `NAME: ${file.originalname}`
+        );
+
+        console.log("=================================================");
 
         try {
 
           const result =
             await uploadMediaAndCreatePost({
-              accessToken: session.accessToken,
+              accessToken:
+                session.accessToken,
+
               file,
-              caption: req.body.caption || "",
+
+              caption:
+                Array.isArray(req.body.caption)
+                  ? (
+                      req.body.caption[i] ||
+                      ""
+                    )
+                  : (
+                      req.body.caption ||
+                      ""
+                    ),
+
               audience:
                 req.body.audience ||
                 "followers-and-subscribers",
-              price: req.body.price || 0,
-              postNow: "true"
+
+              price:
+                Array.isArray(req.body.price)
+                  ? (
+                      req.body.price[i] ||
+                      0
+                    )
+                  : (
+                      req.body.price ||
+                      0
+                    ),
+
+              postNow:
+                req.body.postNow ||
+                "true",
+
+              scheduleTime:
+                Array.isArray(req.body.scheduleTime)
+                  ? (
+                      req.body.scheduleTime[i] ||
+                      ""
+                    )
+                  : (
+                      req.body.scheduleTime ||
+                      ""
+                    )
             });
 
           results.push({
             success: true,
-            file: file.originalname,
-            result
+            file:
+              file.originalname,
+            mediaUuid:
+              result.mediaUuid,
+            uploadId:
+              result.uploadId,
+            post:
+              result.post
           });
+
+          console.log(
+            `✅ SUCCESS: ${file.originalname}`
+          );
 
         } catch (err) {
 
+          console.error(
+            `❌ FAILED: ${file.originalname}`
+          );
+
           results.push({
             success: false,
-            file: file.originalname,
+            file:
+              file.originalname,
             error:
               err?.response?.data ||
-              err.message
+              err.message ||
+              "Unknown error"
           });
         }
       }
 
-      res.json({
+      const successCount =
+        results.filter(
+          r => r.success
+        ).length;
+
+      const failedCount =
+        results.filter(
+          r => !r.success
+        ).length;
+
+      console.log("=================================================");
+      console.log("🏁 BULK UPLOAD COMPLETE");
+      console.log(
+        `SUCCESS: ${successCount}`
+      );
+
+      console.log(
+        `FAILED: ${failedCount}`
+      );
+
+      console.log("=================================================");
+
+      return res.json({
         ok: true,
-        total: results.length,
+        total:
+          results.length,
+        successCount,
+        failedCount,
         results
       });
 
     } catch (err) {
 
-      res.status(500).json({
+      console.error("=================================================");
+      console.error("❌ BULK ROUTE ERROR");
+      console.error("=================================================");
+
+      console.error(
+        err?.response?.data ||
+        err.message ||
+        err
+      );
+
+      return res.status(500).json({
         ok: false,
         error:
           err?.response?.data ||
-          err.message
+          err.message ||
+          "Bulk upload failed"
       });
     }
   }
@@ -754,21 +1002,24 @@ app.post(
 // LOGOUT
 // ======================================================
 
-app.post("/daniapp/logout", (req, res) => {
+app.post(
+  "/daniapp/logout",
+  (req, res) => {
 
-  const sid =
-    req.get("x-dani-session") ||
-    req.body?.sid ||
-    "";
+    const sid =
+      req.get("x-dani-session") ||
+      req.body?.sid ||
+      "";
 
-  if (sid) {
-    sessions.delete(sid);
+    if (sid) {
+      sessions.delete(sid);
+    }
+
+    res.json({
+      ok: true
+    });
   }
-
-  res.json({
-    ok: true
-  });
-});
+);
 
 // ======================================================
 // START
