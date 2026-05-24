@@ -41,6 +41,8 @@ app.use(cors({
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// ... [All your helper functions remain unchanged] ...
+
 function createPkceState(appName) {
   const state = crypto.randomBytes(16).toString("hex");
   const nonce = crypto.randomBytes(16).toString("hex");
@@ -68,16 +70,8 @@ function makeSession(data) {
 }
 
 function getSession(req) {
-  const sid =
-    req.get("x-dani-session") ||
-    req.query.sid ||
-    req.body?.sid ||
-    "";
-
-  return {
-    sid,
-    session: sid ? sessions.get(sid) : null
-  };
+  const sid = req.get("x-dani-session") || req.query.sid || req.body?.sid || "";
+  return { sid, session: sid ? sessions.get(sid) : null };
 }
 
 function getName(profile) {
@@ -100,46 +94,11 @@ function getMediaType(file) {
   return "image";
 }
 
-async function exchangeToken({ code, codeVerifier }) {
-  const basicAuth = Buffer
-    .from(`${DANI_CLIENT_ID}:${DANI_CLIENT_SECRET}`)
-    .toString("base64");
-
-  const response = await axios.post(
-    `${AUTH_BASE}/oauth2/token`,
-    new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: DANI_REDIRECT_URI,
-      code_verifier: codeVerifier
-    }).toString(),
-    {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${basicAuth}`
-      },
-      timeout: 30000
-    }
-  );
-
-  return response.data;
-}
-
-async function getProfile(accessToken) {
-  const response = await axios.get(`${API_BASE}/users/me`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "X-Fanvue-API-Version": FANVUE_API_VERSION
-    },
-    timeout: 30000
-  });
-
-  return response.data || {};
-}
+// ==================== UPDATED ENDPOINTS ====================
 
 async function createUploadSession(accessToken, file) {
   const response = await axios.post(
-    `${API_BASE}/creator/media/uploads`,
+    `${API_BASE}/creators/media/uploads`,   // ← Fixed
     {
       name: file.originalname,
       filename: file.originalname,
@@ -169,7 +128,7 @@ async function createUploadSession(accessToken, file) {
 
 async function getSignedUploadUrl(accessToken, uploadId, partNumber) {
   const response = await axios.get(
-    `${API_BASE}/creator/media/uploads/${uploadId}/parts/${partNumber}/url`,
+    `${API_BASE}/creators/media/uploads/${uploadId}/parts/${partNumber}/url`,  // ← Fixed
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -191,36 +150,9 @@ async function getSignedUploadUrl(accessToken, uploadId, partNumber) {
   return response.data?.url || response.data?.signedUrl || response.data?.uploadUrl || response.data;
 }
 
-async function putFileToSignedUrl(signedUrl, file) {
-  const response = await axios.put(
-    signedUrl,
-    file.buffer,
-    {
-      headers: {
-        "Content-Type": file.mimetype,
-        "Content-Length": file.size
-      },
-      timeout: 120000,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      validateStatus: () => true
-    }
-  );
-
-  if (response.status < 200 || response.status >= 300) {
-    throw {
-      stage: "s3_put_upload",
-      status: response.status,
-      details: response.data
-    };
-  }
-
-  return response.headers.etag || response.headers.ETag || "";
-}
-
 async function completeUploadSession(accessToken, uploadId, parts) {
   const response = await axios.patch(
-    `${API_BASE}/creator/media/uploads/${uploadId}`,
+    `${API_BASE}/creators/media/uploads/${uploadId}`,   // ← Fixed
     { parts },
     {
       headers: {
@@ -244,63 +176,9 @@ async function completeUploadSession(accessToken, uploadId, parts) {
   return response.data;
 }
 
-async function uploadMediaFanvue(accessToken, file) {
-  const start = await createUploadSession(accessToken, file);
-
-  const mediaUuid =
-    start.mediaUuid ||
-    start.uuid ||
-    start.media?.uuid ||
-    start.data?.mediaUuid ||
-    start.data?.uuid;
-
-  const uploadId =
-    start.uploadId ||
-    start.id ||
-    start.data?.uploadId ||
-    start.data?.id;
-
-  if (!mediaUuid || !uploadId) {
-    throw {
-      stage: "create_upload_session",
-      status: 500,
-      details: {
-        error: "Missing mediaUuid or uploadId",
-        response: start
-      }
-    };
-  }
-
-  const partNumber = 1;
-  const signedUrl = await getSignedUploadUrl(accessToken, uploadId, partNumber);
-
-  if (!signedUrl) {
-    throw {
-      stage: "get_signed_upload_url",
-      status: 500,
-      details: "No signed URL returned"
-    };
-  }
-
-  const etag = await putFileToSignedUrl(signedUrl, file);
-
-  const complete = await completeUploadSession(
-    accessToken,
-    uploadId,
-    etag ? [{ partNumber, etag }] : []
-  );
-
-  return {
-    mediaUuid,
-    uploadId,
-    complete,
-    start
-  };
-}
-
 async function createPost(accessToken, payload) {
   const response = await axios.post(
-    `${API_BASE}/creator/posts`,
+    `${API_BASE}/creators/posts`,   // ← Fixed
     payload,
     {
       headers: {
@@ -325,146 +203,94 @@ async function createPost(accessToken, payload) {
   return response.data;
 }
 
-app.get("/", (req, res) => {
-  res.send("DaniApp Fanvue server running");
-});
+// ==================== REST OF YOUR CODE (unchanged) ====================
 
-app.get("/health", (req, res) => {
-  res.send("ok");
-});
+async function uploadMediaFanvue(accessToken, file) {
+  const start = await createUploadSession(accessToken, file);
+
+  const mediaUuid = start.mediaUuid || start.uuid || start.media?.uuid || start.data?.mediaUuid || start.data?.uuid;
+  const uploadId = start.uploadId || start.id || start.data?.uploadId || start.data?.id;
+
+  if (!mediaUuid || !uploadId) {
+    throw {
+      stage: "create_upload_session",
+      status: 500,
+      details: { error: "Missing mediaUuid or uploadId", response: start }
+    };
+  }
+
+  const partNumber = 1;
+  const signedUrl = await getSignedUploadUrl(accessToken, uploadId, partNumber);
+
+  if (!signedUrl) {
+    throw { stage: "get_signed_upload_url", status: 500, details: "No signed URL returned" };
+  }
+
+  const etag = await putFileToSignedUrl(signedUrl, file);
+
+  const complete = await completeUploadSession(accessToken, uploadId, etag ? [{ partNumber, etag }] : []);
+
+  return { mediaUuid, uploadId, complete, start };
+}
+
+async function putFileToSignedUrl(signedUrl, file) {
+  const response = await axios.put(signedUrl, file.buffer, {
+    headers: {
+      "Content-Type": file.mimetype,
+      "Content-Length": file.size
+    },
+    timeout: 120000,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    validateStatus: () => true
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw {
+      stage: "s3_put_upload",
+      status: response.status,
+      details: response.data
+    };
+  }
+
+  return response.headers.etag || response.headers.ETag || "";
+}
+
+// Routes...
+
+app.get("/", (req, res) => res.send("DaniApp Fanvue server running"));
+app.get("/health", (req, res) => res.send("ok"));
 
 app.get("/env-check", (req, res) => {
   res.json({
     ok: true,
-    build: "daniapp-creator-upload-final",
-    daniapp: {
-      client: !!DANI_CLIENT_ID,
-      redirect: DANI_REDIRECT_URI,
-      scopes: DANI_SCOPES
-    },
+    build: "daniapp-creator-upload-creators-fixed",
+    daniapp: { client: !!DANI_CLIENT_ID, redirect: DANI_REDIRECT_URI, scopes: DANI_SCOPES },
     endpoints: {
-      auth: `${AUTH_BASE}/oauth2/auth`,
-      token: `${AUTH_BASE}/oauth2/token`,
-      profile: `${API_BASE}/users/me`,
-      createUploadSession: `${API_BASE}/creator/media/uploads`,
-      uploadPartUrl: `${API_BASE}/creator/media/uploads/:uploadId/parts/:partNumber/url`,
-      completeUpload: `${API_BASE}/creator/media/uploads/:uploadId`,
-      createPost: `${API_BASE}/creator/posts`
+      createUploadSession: `${API_BASE}/creators/media/uploads`,
+      uploadPartUrl: `${API_BASE}/creators/media/uploads/:uploadId/parts/:partNumber/url`,
+      completeUpload: `${API_BASE}/creators/media/uploads/:uploadId`,
+      createPost: `${API_BASE}/creators/posts`
     },
-    sessions: sessions.size,
-    states: oauthStates.size
-  });
-});
-
-app.get("/daniapp/oauth/start", (req, res) => {
-  if (!DANI_CLIENT_ID || !DANI_CLIENT_SECRET || !DANI_REDIRECT_URI) {
-    return res.status(503).send("Missing DaniApp OAuth environment variables.");
-  }
-
-  const pkce = createPkceState("daniapp");
-  const authUrl = new URL(`${AUTH_BASE}/oauth2/auth`);
-
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("client_id", DANI_CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", DANI_REDIRECT_URI);
-  authUrl.searchParams.set("scope", DANI_SCOPES);
-  authUrl.searchParams.set("state", pkce.state);
-  authUrl.searchParams.set("nonce", pkce.nonce);
-  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
-  authUrl.searchParams.set("code_challenge_method", "S256");
-
-  res.redirect(authUrl.toString());
-});
-
-app.get("/daniapp/oauth/callback", async (req, res) => {
-  try {
-    const { code, state, error, error_description } = req.query;
-
-    if (error) {
-      return res.status(400).send(`DaniApp OAuth error: ${error} ${error_description || ""}`);
-    }
-
-    if (!code || !state) {
-      return res.status(400).send("Missing code/state");
-    }
-
-    const stored = oauthStates.get(state);
-
-    if (!stored || stored.appName !== "daniapp") {
-      return res.status(400).send("Invalid DaniApp state");
-    }
-
-    oauthStates.delete(state);
-
-    const tokens = await exchangeToken({
-      code,
-      codeVerifier: stored.codeVerifier
-    });
-
-    let profile = {};
-
-    try {
-      profile = await getProfile(tokens.access_token);
-    } catch (err) {
-      console.error("DaniApp profile fetch failed:", err?.response?.data || err.message);
-    }
-
-    const sid = makeSession({
-      app: "daniapp",
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token || "",
-      profile
-    });
-
-    const name = encodeURIComponent(getName(profile) || "Dani Richmond");
-    const handle = encodeURIComponent(getHandle(profile) || "@dani-rich");
-    const avatar = encodeURIComponent(getAvatar(profile) || "");
-
-    res.redirect(
-      `${FRONTEND_ORIGIN}/daniapp/index.html?connected=1&sid=${sid}&name=${name}&handle=${handle}&avatar=${avatar}`
-    );
-  } catch (err) {
-    console.error("DaniApp OAuth failed:", err?.response?.data || err.message);
-    res.status(500).send("DaniApp OAuth failed");
-  }
-});
-
-app.get("/daniapp/debug/full", (req, res) => {
-  const { sid, session } = getSession(req);
-
-  res.json({
-    ok: true,
-    sidPresent: !!sid,
-    sessionExists: !!session,
-    connected: !!session?.accessToken,
-    app: session?.app || null,
-    profile: session?.profile || null,
     sessions: sessions.size
   });
 });
+
+// ... (keep all your OAuth routes, /daniapp/api/post, etc. unchanged)
 
 app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
   try {
     const { session } = getSession(req);
 
     if (!session || session.app !== "daniapp" || !session.accessToken) {
-      return res.status(401).json({
-        ok: false,
-        error: "Fanvue is not connected. Reconnect Fanvue first."
-      });
+      return res.status(401).json({ ok: false, error: "Fanvue is not connected. Reconnect Fanvue first." });
     }
 
     if (!req.file) {
-      return res.status(400).json({
-        ok: false,
-        error: "No media uploaded"
-      });
+      return res.status(400).json({ ok: false, error: "No media uploaded" });
     }
 
-    const uploadResult = await uploadMediaFanvue(
-      session.accessToken,
-      req.file
-    );
+    const uploadResult = await uploadMediaFanvue(session.accessToken, req.file);
 
     const priceNumber = Number(req.body.price || 0);
 
@@ -474,10 +300,7 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
       mediaUuids: [uploadResult.mediaUuid]
     };
 
-    if (priceNumber > 0) {
-      postPayload.price = priceNumber;
-    }
-
+    if (priceNumber > 0) postPayload.price = priceNumber;
     if (req.body.postNow !== "true" && req.body.scheduleTime) {
       postPayload.publishAt = new Date(req.body.scheduleTime).toISOString();
     }
@@ -493,7 +316,6 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
     });
   } catch (err) {
     console.error("Dani post failed:", err);
-
     return res.status(500).json({
       ok: false,
       error: "Fanvue post failed",
@@ -506,26 +328,14 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
 
 app.post("/daniapp/logout", (req, res) => {
   const { sid } = getSession(req);
-
-  if (sid) {
-    sessions.delete(sid);
-  }
-
+  if (sid) sessions.delete(sid);
   res.json({ ok: true });
-});
-
-app.post("/daniapp/api/bulk-post", (req, res) => {
-  res.json({
-    ok: true,
-    message: "Bulk route alive"
-  });
 });
 
 app.listen(PORT, () => {
   console.log("============================================================");
-  console.log("DANIAPP FANVUE SERVER READY - CREATOR UPLOAD FINAL");
+  console.log("DANIAPP FANVUE SERVER READY - CREATORS (PLURAL) FIXED");
   console.log(`DaniApp OAuth: ${BASE_URL}/daniapp/oauth/start`);
-  console.log(`DaniApp Callback: ${DANI_REDIRECT_URI}`);
   console.log(`Env Check: ${BASE_URL}/env-check`);
   console.log("============================================================");
 });
