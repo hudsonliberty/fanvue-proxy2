@@ -98,7 +98,51 @@ function getAvatar(profile) {
   return profile?.avatarUrl || profile?.avatar_url || profile?.avatarUri?.url || profile?.avatarUriSm?.url || "";
 }
 
-// ==================== NEW UPLOAD FUNCTIONS ====================
+function getMediaType(file) {
+  if (file.mimetype.startsWith("video/")) return "video";
+  if (file.mimetype.startsWith("audio/")) return "audio";
+  if (file.mimetype.includes("pdf")) return "document";
+  return "image";
+}
+
+async function exchangeToken({ clientId, clientSecret, redirectUri, code, codeVerifier }) {
+  const basicAuth = Buffer
+    .from(`${clientId}:${clientSecret}`)
+    .toString("base64");
+
+  const response = await axios.post(
+    `${AUTH_BASE}/oauth2/token`,
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: codeVerifier
+    }).toString(),
+    {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${basicAuth}`
+      },
+      timeout: 30000
+    }
+  );
+
+  return response.data;
+}
+
+async function getProfile(accessToken) {
+  const response = await axios.get(`${API_BASE}/users/me`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "X-Fanvue-API-Version": FANVUE_API_VERSION
+    },
+    timeout: 30000
+  });
+
+  return response.data || {};
+}
+
+// ==================== REPLACED SECTION ====================
 
 async function createUploadSession(accessToken, file) {
   const response = await axios.post(
@@ -197,7 +241,10 @@ async function uploadMediaFanvue(accessToken, file) {
     };
   }
 
-  const signedUrl = await getSignedUploadUrl(accessToken, uploadId);
+  const signedUrl = await getSignedUploadUrl(
+    accessToken,
+    uploadId
+  );
 
   await axios.put(
     signedUrl,
@@ -212,7 +259,10 @@ async function uploadMediaFanvue(accessToken, file) {
     }
   );
 
-  await completeUploadSession(accessToken, uploadId);
+  await completeUploadSession(
+    accessToken,
+    uploadId
+  );
 
   return {
     mediaUuid,
@@ -220,7 +270,7 @@ async function uploadMediaFanvue(accessToken, file) {
   };
 }
 
-// ==================== END OF NEW UPLOAD FUNCTIONS ====================
+// ==================== END OF REPLACED SECTION ====================
 
 async function createUserPost(accessToken, payload) {
   const response = await axios.post(
@@ -277,26 +327,182 @@ app.get("/health", (req, res) => res.send("ok"));
 app.get("/env-check", (req, res) => {
   res.json({
     ok: true,
-    build: "two-app-creator-upload-session-v2",
-    midknight: { client: !!OAUTH_CLIENT_ID },
-    daniapp: { client: !!DANI_CLIENT_ID },
+    build: "two-app-creator-upload-session",
+    midknight: {
+      client: !!OAUTH_CLIENT_ID,
+      secret: !!OAUTH_CLIENT_SECRET,
+      redirect: OAUTH_REDIRECT_URI,
+      scopes: OAUTH_SCOPES
+    },
+    daniapp: {
+      client: !!DANI_CLIENT_ID,
+      secret: !!DANI_CLIENT_SECRET,
+      redirect: DANI_REDIRECT_URI,
+      scopes: DANI_SCOPES
+    },
     endpoints: {
-      createUploadSession: `${API_BASE}/media/uploads`,
-      getSignedUrl: `${API_BASE}/media/uploads/:uploadId/url`,
-      completeUpload: `${API_BASE}/media/uploads/:uploadId/complete`
+      auth: `${AUTH_BASE}/oauth2/auth`,
+      token: `${AUTH_BASE}/oauth2/token`,
+      createUploadSession: `${API_BASE}/creator/media/uploads`,
+      uploadPartUrl: `${API_BASE}/creator/media/uploads/:uploadId/parts/:partNumber/url`,
+      completeUpload: `${API_BASE}/creator/media/uploads/:uploadId`,
+      createPost: `${API_BASE}/creator/posts`
     },
     sessions: sessions.size,
     states: oauthStates.size
   });
 });
 
-// ... (all OAuth routes remain unchanged) ...
+app.get("/oauth/start", (req, res) => {
+  if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET || !OAUTH_REDIRECT_URI) {
+    return res.status(503).send("Missing MidKnight OAuth environment variables.");
+  }
 
-app.get("/oauth/start", (req, res) => { /* unchanged */ });
-app.get("/oauth/callback", async (req, res) => { /* unchanged */ });
-app.get("/daniapp/oauth/start", (req, res) => { /* unchanged */ });
-app.get("/daniapp/oauth/callback", async (req, res) => { /* unchanged */ });
-app.get("/daniapp/debug/full", (req, res) => { /* unchanged */ });
+  const pkce = createPkceState("midknight");
+  const authUrl = new URL(`${AUTH_BASE}/oauth2/auth`);
+
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", OAUTH_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", OAUTH_REDIRECT_URI);
+  authUrl.searchParams.set("scope", OAUTH_SCOPES);
+  authUrl.searchParams.set("state", pkce.state);
+  authUrl.searchParams.set("nonce", pkce.nonce);
+  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  res.redirect(authUrl.toString());
+});
+
+app.get("/oauth/callback", async (req, res) => {
+  try {
+    const { code, state, error, error_description } = req.query;
+
+    if (error) return res.status(400).send(`MidKnight OAuth error: ${error} ${error_description || ""}`);
+    if (!code || !state) return res.status(400).send("Missing code/state");
+
+    const stored = oauthStates.get(state);
+    if (!stored || stored.appName !== "midknight") return res.status(400).send("Invalid MidKnight state");
+
+    oauthStates.delete(state);
+
+    const tokens = await exchangeToken({
+      clientId: OAUTH_CLIENT_ID,
+      clientSecret: OAUTH_CLIENT_SECRET,
+      redirectUri: OAUTH_REDIRECT_URI,
+      code,
+      codeVerifier: stored.codeVerifier
+    });
+
+    let profile = {};
+    try {
+      profile = await getProfile(tokens.access_token);
+    } catch (err) {
+      console.error("MidKnight profile fetch failed:", err?.response?.data || err.message);
+    }
+
+    const sid = makeSession({
+      app: "midknight",
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || "",
+      profile
+    });
+
+    res.send(`
+      <body style="background:#111;color:white;font-family:Arial;padding:40px">
+        <h1>MidKnight OAuth Success</h1>
+        <p>Session ID:</p>
+        <pre>${sid}</pre>
+        <p>Profile:</p>
+        <pre>${JSON.stringify(profile, null, 2)}</pre>
+      </body>
+    `);
+  } catch (err) {
+    console.error("MidKnight OAuth failed:", err?.response?.data || err.message);
+    res.status(500).send("MidKnight OAuth failed");
+  }
+});
+
+app.get("/daniapp/oauth/start", (req, res) => {
+  if (!DANI_CLIENT_ID || !DANI_CLIENT_SECRET || !DANI_REDIRECT_URI) {
+    return res.status(503).send("Missing DaniApp OAuth environment variables.");
+  }
+
+  const pkce = createPkceState("daniapp");
+  const authUrl = new URL(`${AUTH_BASE}/oauth2/auth`);
+
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", DANI_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", DANI_REDIRECT_URI);
+  authUrl.searchParams.set("scope", DANI_SCOPES);
+  authUrl.searchParams.set("state", pkce.state);
+  authUrl.searchParams.set("nonce", pkce.nonce);
+  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  res.redirect(authUrl.toString());
+});
+
+app.get("/daniapp/oauth/callback", async (req, res) => {
+  try {
+    const { code, state, error, error_description } = req.query;
+
+    if (error) return res.status(400).send(`DaniApp OAuth error: ${error} ${error_description || ""}`);
+    if (!code || !state) return res.status(400).send("Missing code/state");
+
+    const stored = oauthStates.get(state);
+    if (!stored || stored.appName !== "daniapp") return res.status(400).send("Invalid DaniApp state");
+
+    oauthStates.delete(state);
+
+    const tokens = await exchangeToken({
+      clientId: DANI_CLIENT_ID,
+      clientSecret: DANI_CLIENT_SECRET,
+      redirectUri: DANI_REDIRECT_URI,
+      code,
+      codeVerifier: stored.codeVerifier
+    });
+
+    let profile = {};
+    try {
+      profile = await getProfile(tokens.access_token);
+    } catch (err) {
+      console.error("DaniApp profile fetch failed:", err?.response?.data || err.message);
+    }
+
+    const sid = makeSession({
+      app: "daniapp",
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token || "",
+      profile
+    });
+
+    const name = encodeURIComponent(getName(profile) || "Dani Richmond");
+    const handle = encodeURIComponent(getHandle(profile) || "@dani-rich");
+    const avatar = encodeURIComponent(getAvatar(profile) || "");
+
+    res.redirect(
+      `${FRONTEND_ORIGIN}/daniapp/index.html?connected=1&sid=${sid}&name=${name}&handle=${handle}&avatar=${avatar}`
+    );
+  } catch (err) {
+    console.error("DaniApp OAuth failed:", err?.response?.data || err.message);
+    res.status(500).send("DaniApp OAuth failed");
+  }
+});
+
+app.get("/daniapp/debug/full", (req, res) => {
+  const { sid, session } = getSession(req);
+
+  res.json({
+    ok: true,
+    sidPresent: !!sid,
+    sessionExists: !!session,
+    connected: !!session?.accessToken,
+    app: session?.app || null,
+    profile: session?.profile || null,
+    sessions: sessions.size,
+    states: oauthStates.size
+  });
+});
 
 app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
   try {
@@ -352,6 +558,7 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
 
   } catch (err) {
     console.error("Dani post failed:", err);
+
     return res.status(500).json({
       ok: false,
       error: "Fanvue post failed",
@@ -369,14 +576,19 @@ app.post("/daniapp/logout", (req, res) => {
 });
 
 app.post("/daniapp/api/bulk-post", (req, res) => {
-  res.json({ ok: true, message: "Bulk route alive" });
+  res.json({
+    ok: true,
+    message: "Bulk route alive"
+  });
 });
 
 app.listen(PORT, () => {
   console.log("============================================================");
-  console.log("TWO APP FANVUE SERVER READY - SIMPLE UPLOAD BUILD");
+  console.log("TWO APP FANVUE SERVER READY - CREATOR UPLOAD BUILD");
   console.log(`MidKnight OAuth: ${BASE_URL}/oauth/start`);
+  console.log(`MidKnight Callback: ${OAUTH_REDIRECT_URI}`);
   console.log(`DaniApp OAuth: ${BASE_URL}/daniapp/oauth/start`);
+  console.log(`DaniApp Callback: ${DANI_REDIRECT_URI}`);
   console.log(`Env Check: ${BASE_URL}/env-check`);
   console.log("============================================================");
 });
