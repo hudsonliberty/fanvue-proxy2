@@ -74,20 +74,8 @@ function createPkceState() {
   const state = crypto.randomBytes(16).toString("hex");
   const nonce = crypto.randomBytes(16).toString("hex");
 
-  const codeVerifier = crypto
-    .randomBytes(32)
-    .toString("base64url")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, "");
-
-  const codeChallenge = crypto
-    .createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, "");
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
 
   oauthStates.set(state, { nonce, codeVerifier, ts: Date.now() });
 
@@ -96,11 +84,9 @@ function createPkceState() {
 
 function getMediaType(mimetypeOrFilename) {
   const v = String(mimetypeOrFilename || "").toLowerCase();
-
   if (v.startsWith("video/") || /\.(mp4|mov|webm|m4v)$/i.test(v)) return "video";
   if (v.startsWith("audio/") || /\.(mp3|wav|m4a)$/i.test(v)) return "audio";
   if (v.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif)$/i.test(v)) return "image";
-
   return "document";
 }
 
@@ -113,11 +99,7 @@ function extractCreatorProfile(creator) {
       creator.handle ||
       creator.email ||
       "Fanvue Creator",
-
-    handle: creator.handle
-      ? `@${String(creator.handle).replace(/^@/, "")}`
-      : "",
-
+    handle: creator.handle ? `@${String(creator.handle).replace(/^@/, "")}` : "",
     avatar:
       creator.avatarUrl ||
       creator.avatar_url ||
@@ -180,10 +162,8 @@ function parseBool(value) {
 
 function normalizeAudience(value) {
   const v = String(value || "").trim();
-
   if (v === "followers-and-subscribers") return v;
   if (v === "subscribers") return v;
-
   return "followers-and-subscribers";
 }
 
@@ -240,11 +220,7 @@ async function waitForMediaReady(mediaUuid, fanvueHeaders) {
 
     const status = resp.data?.status || "";
 
-    console.log("MEDIA STATUS:", {
-      mediaUuid,
-      attempt,
-      status
-    });
+    console.log("MEDIA STATUS:", { mediaUuid, attempt, status });
 
     if (status === "ready") return resp.data;
 
@@ -320,11 +296,7 @@ async function uploadMediaAndCreatePost({
     validateStatus: (status) => status >= 200 && status < 300
   });
 
-  const etagRaw =
-    uploadPartResp.headers.etag ||
-    uploadPartResp.headers.ETag ||
-    "";
-
+  const etagRaw = uploadPartResp.headers.etag || uploadPartResp.headers.ETag || "";
   const etag = String(etagRaw).replace(/^"|"$/g, "");
 
   const completePayload = etag
@@ -383,19 +355,7 @@ async function uploadMediaAndCreatePost({
   };
 }
 
-console.log("=".repeat(60));
-console.log("STACKED FANVUE SERVICE STARTING");
-console.log("MVP CLIENT_ID present:", !!CLIENT_ID);
-console.log("MVP CLIENT_SECRET present:", !!CLIENT_SECRET);
-console.log("DANI_CLIENT_ID present:", !!DANI_CLIENT_ID);
-console.log("DANI_CLIENT_SECRET present:", !!DANI_CLIENT_SECRET);
-console.log("DANI_REDIRECT_URI present:", !!DANI_REDIRECT_URI);
-console.log("PORT:", PORT);
-console.log("=".repeat(60));
-
-/* =========================
-   STACKED FRONTENDS
-========================= */
+/* FRONTENDS */
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
@@ -405,21 +365,11 @@ app.get("/mvp", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
-app.get("/daniapp", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "daniapp", "index.html"));
-});
-
-app.get("/daniapp/index.html", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "daniapp", "index.html"));
-});
-
 app.get("/health", (req, res) => {
   res.status(200).send("ok");
 });
 
-/* =========================
-   MVP OAUTH
-========================= */
+/* MVP OAUTH */
 
 app.get("/oauth/start", (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET) {
@@ -454,7 +404,6 @@ app.get("/oauth/callback", async (req, res) => {
 
   try {
     const redirectUri = `${baseUrl(req)}/oauth/callback`;
-
     const basicAuth = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
 
     const tokenResp = await axios.post(
@@ -497,15 +446,11 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
-/* =========================
-   DANI OAUTH
-========================= */
+/* DANI OAUTH */
 
 app.get("/daniapp/oauth/start", (req, res) => {
   if (!DANI_CLIENT_ID || !DANI_CLIENT_SECRET || !DANI_REDIRECT_URI) {
-    return res
-      .status(503)
-      .send("Missing DANI_CLIENT_ID / DANI_CLIENT_SECRET / DANI_REDIRECT_URI.");
+    return res.status(503).send("Missing DANI_CLIENT_ID / DANI_CLIENT_SECRET / DANI_REDIRECT_URI.");
   }
 
   const pkce = createPkceState();
@@ -541,9 +486,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
   oauthStates.delete(state);
 
   try {
-    const basicAuth = Buffer.from(
-      `${DANI_CLIENT_ID}:${DANI_CLIENT_SECRET}`
-    ).toString("base64");
+    const basicAuth = Buffer.from(`${DANI_CLIENT_ID}:${DANI_CLIENT_SECRET}`).toString("base64");
 
     const tokenResp = await axios.post(
       "https://auth.fanvue.com/oauth2/token",
@@ -586,11 +529,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
         ...(profileResp.data || {})
       };
     } catch (profileErr) {
-      console.error(
-        "DANI PROFILE FETCH FAILED:",
-        profileErr?.response?.status,
-        profileErr?.response?.data || profileErr.message
-      );
+      console.error("DANI PROFILE FETCH FAILED:", profileErr?.response?.status, profileErr?.response?.data || profileErr.message);
     }
 
     const profile = extractCreatorProfile(creator);
@@ -605,7 +544,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
     setSessionCookie(res, sid);
 
     return res.redirect(
-      "https://fanvue-proxy2.onrender.com/daniapp" +
+      "https://thesuccessmindset.club/daniapp/index.html" +
         "?connected=1" +
         "&name=" + encodeURIComponent(profile.name) +
         "&handle=" + encodeURIComponent(profile.handle) +
@@ -617,9 +556,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
   }
 });
 
-/* =========================
-   DANI POST API
-========================= */
+/* DANI API */
 
 app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
   const s = getSession(req);
@@ -801,9 +738,7 @@ app.post("/daniapp/api/bulk-post", upload.single("bulkFile"), async (req, res) =
   });
 });
 
-/* =========================
-   SHARED API
-========================= */
+/* SHARED API */
 
 app.get("/api/me", (req, res) => {
   const s = getSession(req);
@@ -827,10 +762,6 @@ app.post("/api/logout", (req, res) => {
   return res.json({ ok: true });
 });
 
-/* =========================
-   FALLBACK
-========================= */
-
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
@@ -838,9 +769,9 @@ app.get("*", (req, res) => {
 app.listen(PORT, () => {
   console.log("=".repeat(60));
   console.log("SERVER READY");
-  console.log("MVP:  https://fanvue-proxy2.onrender.com/");
-  console.log("Dani: https://fanvue-proxy2.onrender.com/daniapp");
+  console.log("MVP: https://fanvue-proxy2.onrender.com/");
   console.log("Dani OAuth: https://fanvue-proxy2.onrender.com/daniapp/oauth/start");
+  console.log("Dani Callback: https://fanvue-proxy2.onrender.com/daniapp/oauth/callback");
   console.log("Dani Bulk: https://fanvue-proxy2.onrender.com/daniapp/api/bulk-post");
   console.log("=".repeat(60));
 });
