@@ -5,93 +5,66 @@ const axios = require("axios");
 const crypto = require("crypto");
 const path = require("path");
 const cookieParser = require("cookie-parser");
-const multer = require("multer");
-const { parse } = require("csv-parse/sync");
-const XLSX = require("xlsx");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const upload = multer({
-  storage: multer.memoryStorage()
-});
-
 app.set("trust proxy", true);
 
-app.use((req, res, next) => {
-  res.header(
-    "Access-Control-Allow-Origin",
-    "https://thesuccessmindset.club"
-  );
+// --- ENV ---
+const CLIENT_ID = (process.env.CLIENT_ID || "").trim();
+const CLIENT_SECRET = (process.env.CLIENT_SECRET || "").trim();
 
-  res.header(
-    "Access-Control-Allow-Credentials",
-    "true"
-  );
+const DANI_CLIENT_ID = (process.env.DANI_CLIENT_ID || "").trim();
+const DANI_CLIENT_SECRET = (process.env.DANI_CLIENT_SECRET || "").trim();
+const DANI_REDIRECT_URI = (process.env.DANI_REDIRECT_URI || "").trim();
 
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET,POST,PATCH,PUT,OPTIONS"
-  );
+const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();
 
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
+const COOKIE_NAME = (process.env.SESSION_COOKIE_NAME || "fanvue_oauth").trim();
+const SESSION_SECRET = (process.env.SESSION_SECRET || "change-me").trim();
+const WEBHOOK_SECRET = (process.env.WEBHOOK_SECRET || "").trim();
 
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
-
-const CLIENT_ID =
-  (process.env.CLIENT_ID || "").trim();
-
-const CLIENT_SECRET =
-  (process.env.CLIENT_SECRET || "").trim();
-
-const DANI_CLIENT_ID =
-  (process.env.DANI_CLIENT_ID || "").trim();
-
-const DANI_CLIENT_SECRET =
-  (process.env.DANI_CLIENT_SECRET || "").trim();
-
-const DANI_REDIRECT_URI =
-  (process.env.DANI_REDIRECT_URI || "").trim();
-
-const COOKIE_NAME =
-  (process.env.SESSION_COOKIE_NAME || "fanvue_oauth").trim();
-
-const SESSION_SECRET =
-  (process.env.SESSION_SECRET || "change-me").trim();
-
-const FANVUE_API_VERSION = "2025-06-26";
-
+// --- In-memory stores ---
 const oauthStates = new Map();
 const sessions = new Map();
+const webhookEvents = [];
+const MAX_EVENTS = 100;
 
-app.use(express.json({ limit: "25mb" }));
+// --- Raw-body capture ---
+function rawBodySaver(req, res, buf) {
+  if (buf && buf.length) req.rawBody = buf.toString("utf8");
+}
 
-app.use(express.urlencoded({
-  extended: true,
-  limit: "25mb"
-}));
+// --- Middleware ---
+app.use(
+  express.json({
+    limit: "2mb",
+    verify: rawBodySaver,
+  })
+);
 
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser(SESSION_SECRET));
-
 app.use(express.static(path.join(__dirname, "public")));
 
+// --- Helpers ---
 function baseUrl(req) {
   return `https://${req.get("host")}`;
 }
 
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) return next();
+
+  const got = (req.get("x-admin-token") || "").trim();
+  if (got && got === ADMIN_TOKEN) return next();
+
+  return res.status(401).json({ error: "Unauthorized" });
+}
+
 function getSession(req) {
   const sid = req.signedCookies?.[COOKIE_NAME];
-
   if (!sid) return null;
-
   return sessions.get(sid) || null;
 }
 
@@ -100,689 +73,255 @@ function setSessionCookie(res, sid) {
     signed: true,
     httpOnly: true,
     secure: true,
-    sameSite: "none",
+    sameSite: "lax",
     path: "/",
-    maxAge: 1000 * 60 * 60 * 24 * 30
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
   });
 }
 
 function clearSessionCookie(res) {
-  res.clearCookie(COOKIE_NAME, {
-    path: "/"
-  });
+  res.clearCookie(COOKIE_NAME, { path: "/" });
 }
 
+// ... (keep your verifyFanvueSignature, normalizeWebhook, addEvent unchanged)
+
 function createPkceState() {
-  const state =
-    crypto.randomBytes(16).toString("hex");
+  const state = crypto.randomBytes(16).toString("hex");
+  const nonce = crypto.randomBytes(16).toString("hex");
 
-  const nonce =
-    crypto.randomBytes(16).toString("hex");
+  const codeVerifier = crypto
+    .randomBytes(32)
+    .toString("base64url")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
 
-  const codeVerifier =
-    crypto.randomBytes(32).toString("base64url");
-
-  const codeChallenge =
-    crypto
-      .createHash("sha256")
-      .update(codeVerifier)
-      .digest("base64url");
+  const codeChallenge = crypto
+    .createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64url")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
 
   oauthStates.set(state, {
     nonce,
     codeVerifier,
-    ts: Date.now()
+    ts: Date.now(),
   });
 
-  return {
-    state,
-    nonce,
-    codeVerifier,
-    codeChallenge
-  };
-}
-
-function getMediaType(mimetypeOrFilename) {
-  const v =
-    String(mimetypeOrFilename || "").toLowerCase();
-
-  if (
-    v.startsWith("video/") ||
-    /\.(mp4|mov|webm|m4v)$/i.test(v)
-  ) {
-    return "video";
-  }
-
-  if (
-    v.startsWith("audio/") ||
-    /\.(mp3|wav|m4a)$/i.test(v)
-  ) {
-    return "audio";
-  }
-
-  if (
-    v.startsWith("image/") ||
-    /\.(jpg|jpeg|png|webp|gif)$/i.test(v)
-  ) {
-    return "image";
-  }
-
-  return "document";
-}
-
-function findSignedUrl(value) {
-  if (!value) return "";
-
-  if (typeof value === "string") {
-    return value.startsWith("https://")
-      ? value
-      : "";
-  }
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findSignedUrl(item);
-      if (found) return found;
+  // Cleanup old states
+  if (oauthStates.size > 100) {
+    for (const [key, val] of oauthStates) {
+      if (Date.now() - val.ts > 10 * 60 * 1000) oauthStates.delete(key);
     }
   }
 
-  if (typeof value === "object") {
-    for (const key of Object.keys(value)) {
-      const found = findSignedUrl(value[key]);
-      if (found) return found;
-    }
-  }
-
-  return "";
+  return { state, nonce, codeVerifier, codeChallenge };
 }
 
-function parseBool(value) {
-  const v =
-    String(value || "")
-      .trim()
-      .toLowerCase();
+// =========================
+// HELPERS FOR TOKEN EXCHANGE
+// =========================
 
-  return (
-    v === "true" ||
-    v === "yes" ||
-    v === "1"
-  );
-}
+async function exchangeCodeForToken(clientId, clientSecret, code, redirectUri, codeVerifier) {
+  const params = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
+  });
 
-function normalizeAudience(value) {
-  const v =
-    String(value || "").trim();
-
-  if (v === "subscribers") {
-    return v;
-  }
-
-  return "followers-and-subscribers";
-}
-
-function parseBulkFile(file) {
-  const name =
-    file.originalname.toLowerCase();
-
-  if (name.endsWith(".csv")) {
-    return parse(
-      file.buffer.toString("utf8"),
-      {
-        columns: true,
-        skip_empty_lines: true,
-        trim: true
-      }
-    );
-  }
-
-  if (
-    name.endsWith(".xlsx") ||
-    name.endsWith(".xls")
-  ) {
-    const workbook =
-      XLSX.read(file.buffer, {
-        type: "buffer"
-      });
-
-    const sheet =
-      workbook.Sheets[
-        workbook.SheetNames[0]
-      ];
-
-    return XLSX.utils.sheet_to_json(
-      sheet,
-      {
-        defval: ""
-      }
-    );
-  }
-
-  throw new Error(
-    "Only CSV, XLS, or XLSX supported."
-  );
-}
-
-async function downloadMediaFromUrl(
-  mediaUrl,
-  filename
-) {
-  const response = await axios.get(
-    mediaUrl,
+  const tokenResp = await axios.post(
+    "https://auth.fanvue.com/oauth2/token",
+    params.toString(),
     {
-      responseType: "arraybuffer",
-      timeout: 120000,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    }
-  );
-
-  const contentType =
-    response.headers["content-type"] ||
-    "application/octet-stream";
-
-  return {
-    buffer: Buffer.from(response.data),
-    mimetype: contentType,
-    originalname:
-      filename ||
-      path.basename(
-        new URL(mediaUrl).pathname
-      ) ||
-      "media-file"
-  };
-}
-
-async function waitForMediaReady(
-  mediaUuid,
-  fanvueHeaders
-) {
-  const maxAttempts = 24;
-  const delayMs = 5000;
-
-  for (
-    let attempt = 1;
-    attempt <= maxAttempts;
-    attempt++
-  ) {
-    const resp = await axios.get(
-      `https://api.fanvue.com/media/${encodeURIComponent(mediaUuid)}`,
-      {
-        headers: fanvueHeaders,
-        timeout: 30000,
-        validateStatus: status =>
-          status >= 200 &&
-          status < 500
-      }
-    );
-
-    console.log(
-      "MEDIA STATUS:",
-      JSON.stringify(resp.data)
-    );
-
-    const status =
-      resp.data?.status || "";
-
-    if (status === "ready") {
-      return resp.data;
-    }
-
-    if (status === "error") {
-      throw new Error(
-        `Media processing failed: ${mediaUuid}`
-      );
-    }
-
-    await new Promise(resolve =>
-      setTimeout(resolve, delayMs)
-    );
-  }
-
-  throw new Error(
-    `Media did not become ready: ${mediaUuid}`
-  );
-}
-
-async function uploadMediaAndCreatePost({
-  accessToken,
-  file,
-  caption,
-  audience,
-  price,
-  postNow,
-  scheduleTime
-}) {
-  const fanvueHeaders = {
-    Authorization: `Bearer ${accessToken}`,
-    "X-Fanvue-API-Version":
-      FANVUE_API_VERSION
-  };
-
-  const uploadSession =
-    await axios.post(
-      "https://api.fanvue.com/media/uploads",
-      {
-        name: file.originalname,
-        filename: file.originalname,
-        mediaType: getMediaType(
-          file.mimetype ||
-          file.originalname
-        )
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      {
-        headers: {
-          ...fanvueHeaders,
-          "Content-Type":
-            "application/json"
-        }
-      }
-    );
-
-  console.log(
-    "UPLOAD SESSION:",
-    JSON.stringify(uploadSession.data)
+      timeout: 20000,
+    }
   );
 
-  const mediaUuid =
-    uploadSession.data.mediaUuid;
-
-  const uploadId =
-    uploadSession.data.uploadId;
-
-  const signedUrlResp =
-    await axios.get(
-      `https://api.fanvue.com/media/uploads/${uploadId}/parts/1/url`,
-      {
-        headers: fanvueHeaders
-      }
-    );
-
-  console.log(
-    "SIGNED URL:",
-    JSON.stringify(signedUrlResp.data)
-  );
-
-  const signedUrl =
-    findSignedUrl(
-      signedUrlResp.data
-    );
-
-  if (!signedUrl) {
-    throw new Error(
-      "No signed upload URL returned."
-    );
-  }
-
-  const uploadPartResp =
-    await axios.put(
-      signedUrl,
-      file.buffer,
-      {
-        headers: {
-          "Content-Type":
-            file.mimetype ||
-            "application/octet-stream"
-        },
-        timeout: 120000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity
-      }
-    );
-
-  const etagRaw =
-    uploadPartResp.headers.etag ||
-    "";
-
-  const etag =
-    String(etagRaw).replace(
-      /^"|"$/g,
-      ""
-    );
-
-  const completeResp =
-    await axios.patch(
-      `https://api.fanvue.com/media/uploads/${uploadId}`,
-      {
-        parts: [
-          {
-            ETag: etag,
-            PartNumber: 1
-          }
-        ]
-      },
-      {
-        headers: {
-          ...fanvueHeaders,
-          "Content-Type":
-            "application/json"
-        }
-      }
-    );
-
-  console.log(
-    "UPLOAD COMPLETE:",
-    JSON.stringify(completeResp.data)
-  );
-
-  await waitForMediaReady(
-    mediaUuid,
-    fanvueHeaders
-  );
-
-  const postPayload = {
-    text: caption,
-    mediaUuids: [mediaUuid],
-    audience
-  };
-
-  const priceNumber =
-    Number(price || 0);
-
-  if (priceNumber > 0) {
-    postPayload.price =
-      Math.round(priceNumber * 100);
-  }
-
-  if (!postNow && scheduleTime) {
-    postPayload.publishAt =
-      new Date(
-        scheduleTime
-      ).toISOString();
-  }
-
-  console.log(
-    "POST PAYLOAD:",
-    JSON.stringify(postPayload)
-  );
-
-  const postResp =
-    await axios.post(
-      "https://api.fanvue.com/posts",
-      postPayload,
-      {
-        headers: {
-          ...fanvueHeaders,
-          "Content-Type":
-            "application/json"
-        }
-      }
-    );
-
-  console.log(
-    "POST RESPONSE:",
-    JSON.stringify(postResp.data)
-  );
-
-  return {
-    mediaUuid,
-    uploadId,
-    post: postResp.data
-  };
+  return tokenResp.data;
 }
 
-/* FRONTEND */
+// =========================
+// ROUTES
+// =========================
 
 app.get("/", (req, res) => {
-  res.sendFile(
-    path.join(
-      __dirname,
-      "public",
-      "dashboard.html"
-    )
-  );
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
-/* DANI OAUTH */
+app.get("/health", (req, res) => res.status(200).send("ok"));
 
-app.get(
-  "/daniapp/oauth/start",
-  (req, res) => {
+// =========================
+// ORIGINAL MVP OAUTH
+// =========================
 
-    const pkce =
-      createPkceState();
-
-    const authUrl =
-      new URL(
-        "https://auth.fanvue.com/oauth2/auth"
-      );
-
-    authUrl.searchParams.set(
-      "response_type",
-      "code"
-    );
-
-    authUrl.searchParams.set(
-      "client_id",
-      DANI_CLIENT_ID
-    );
-
-    authUrl.searchParams.set(
-      "redirect_uri",
-      DANI_REDIRECT_URI
-    );
-
-    authUrl.searchParams.set(
-      "scope",
-      [
-        "openid",
-        "offline_access",
-
-        "write:post",
-        "write:media",
-        "write:chat",
-
-        "read:creator",
-        "read:fan",
-        "read:chat",
-        "read:media",
-        "read:post",
-        "read:self"
-      ].join(" ")
-    );
-
-    authUrl.searchParams.set(
-      "state",
-      pkce.state
-    );
-
-    authUrl.searchParams.set(
-      "nonce",
-      pkce.nonce
-    );
-
-    authUrl.searchParams.set(
-      "code_challenge",
-      pkce.codeChallenge
-    );
-
-    authUrl.searchParams.set(
-      "code_challenge_method",
-      "S256"
-    );
-
-    console.log(
-      "AUTH URL:",
-      authUrl.toString()
-    );
-
-    return res.redirect(
-      authUrl.toString()
-    );
+app.get("/oauth/start", (req, res) => {
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    return res.status(503).send("Missing CLIENT_ID / CLIENT_SECRET");
   }
-);
 
-app.get(
-  "/daniapp/oauth/callback",
-  async (req, res) => {
+  const pkce = createPkceState();
+  const redirectUri = `${baseUrl(req)}/oauth/callback`;
 
-    const {
+  const authUrl = new URL("https://auth.fanvue.com/oauth2/auth");
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "openid offline_access read:self read:fan read:insights");
+  authUrl.searchParams.set("state", pkce.state);
+  authUrl.searchParams.set("nonce", pkce.nonce);
+  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  res.redirect(authUrl.toString());
+});
+
+app.get("/oauth/callback", async (req, res) => {
+  const { code, state, error, error_description } = req.query;
+
+  if (error) {
+    console.error("Fanvue OAuth error:", error, error_description);
+    return res.status(400).send(`Authorization error: ${error} ${error_description || ""}`);
+  }
+
+  if (!code || !state) {
+    return res.status(400).send("Missing code or state");
+  }
+
+  const st = oauthStates.get(state);
+  if (!st) {
+    return res.status(400).send("Invalid/expired state. Please try again.");
+  }
+  oauthStates.delete(state);
+
+  try {
+    const redirectUri = `${baseUrl(req)}/oauth/callback`;
+
+    const tokenData = await exchangeCodeForToken(
+      CLIENT_ID,
+      CLIENT_SECRET,
       code,
-      state
-    } = req.query;
+      redirectUri,
+      st.codeVerifier
+    );
 
-    const st =
-      oauthStates.get(state);
+    const accessToken = tokenData.access_token;
+    if (!accessToken) throw new Error("No access_token received");
 
-    if (!st) {
-      return res
-        .status(400)
-        .send("Invalid state.");
-    }
+    // Get profile
+    const profileResp = await axios.get("https://api.fanvue.com/users/me", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "X-Fanvue-API-Version": "2025-06-26",
+      },
+      timeout: 15000,
+    });
 
-    oauthStates.delete(state);
+    const creator = profileResp.data || {};
 
-    try {
+    const sid = crypto.randomBytes(24).toString("hex");
+    sessions.set(sid, { accessToken, creator, ts: Date.now() });
 
-      const basicAuth =
-        Buffer.from(
-          `${DANI_CLIENT_ID}:${DANI_CLIENT_SECRET}`
-        ).toString("base64");
+    setSessionCookie(res, sid);
 
-      const tokenResp =
-        await axios.post(
-          "https://auth.fanvue.com/oauth2/token",
-          new URLSearchParams({
-            grant_type:
-              "authorization_code",
-            code,
-            redirect_uri:
-              DANI_REDIRECT_URI,
-            code_verifier:
-              st.codeVerifier
-          }).toString(),
-          {
-            headers: {
-              "Content-Type":
-                "application/x-www-form-urlencoded",
-              Authorization:
-                `Basic ${basicAuth}`
-            }
-          }
-        );
-
-      console.log(
-        "TOKEN RESPONSE:",
-        JSON.stringify(tokenResp.data)
-      );
-
-      const accessToken =
-        tokenResp.data.access_token;
-
-      const sid =
-        crypto
-          .randomBytes(24)
-          .toString("hex");
-
-      sessions.set(sid, {
-        accessToken,
-        ts: Date.now()
-      });
-
-      setSessionCookie(
-        res,
-        sid
-      );
-
-      return res.redirect(
-        "https://thesuccessmindset.club/daniapp/index.html?connected=1"
-      );
-
-    } catch (err) {
-
-      console.error(
-        "DANI OAUTH FAILED:",
-        err?.response?.status,
-        JSON.stringify(
-          err?.response?.data
-        )
-      );
-
-      return res
-        .status(500)
-        .send("OAuth failed.");
-    }
+    console.log("✅ MVP OAuth successful for", creator.handle || creator.displayName);
+    return res.redirect("/");
+  } catch (err) {
+    console.error("OAuth callback failed:", {
+      status: err?.response?.status,
+      data: err?.response?.data,
+      message: err.message,
+    });
+    return res.status(500).send(`Authentication failed: ${err.message}`);
   }
-);
+});
 
-/* SINGLE POST */
+// =========================
+// DANIAPP OAUTH
+// =========================
 
-app.post(
-  "/daniapp/api/post",
-  upload.single("media"),
-  async (req, res) => {
-
-    const s =
-      getSession(req);
-
-    if (!s?.accessToken) {
-      return res
-        .status(401)
-        .json({
-          ok: false,
-          error:
-            "Not connected."
-        });
-    }
-
-    try {
-
-      const result =
-        await uploadMediaAndCreatePost({
-          accessToken:
-            s.accessToken,
-
-          file: req.file,
-
-          caption:
-            String(
-              req.body.caption || ""
-            ).trim(),
-
-          audience:
-            normalizeAudience(
-              req.body.audience
-            ),
-
-          price:
-            req.body.price,
-
-          postNow:
-            req.body.postNow === "true",
-
-          scheduleTime:
-            req.body.scheduleTime
-        });
-
-      return res.json({
-        ok: true,
-        result
-      });
-
-    } catch (err) {
-
-      console.error(
-        "DANI POST FAILED:",
-        err?.response?.status,
-        JSON.stringify(
-          err?.response?.data
-        ),
-        err.message
-      );
-
-      return res
-        .status(500)
-        .json({
-          ok: false,
-          error:
-            err?.response?.data ||
-            err.message
-        });
-    }
+app.get("/daniapp/oauth/start", (req, res) => {
+  if (!DANI_CLIENT_ID || !DANI_CLIENT_SECRET || !DANI_REDIRECT_URI) {
+    return res.status(503).send("Missing DaniApp OAuth environment variables");
   }
-);
+
+  const pkce = createPkceState();
+  const redirectUri = DANI_REDIRECT_URI;
+
+  const authUrl = new URL("https://auth.fanvue.com/oauth2/auth");
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", DANI_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "openid offline_access write:post write:media");
+  authUrl.searchParams.set("state", pkce.state);
+  authUrl.searchParams.set("nonce", pkce.nonce);
+  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  res.redirect(authUrl.toString());
+});
+
+app.get("/daniapp/oauth/callback", async (req, res) => {
+  const { code, state, error, error_description } = req.query;
+
+  if (error) {
+    console.error("DaniApp OAuth error:", error, error_description);
+    return res.status(400).send(`Fanvue denied: ${error} ${error_description || ""}`);
+  }
+
+  if (!code || !state) return res.status(400).send("Missing code/state");
+
+  const st = oauthStates.get(state);
+  if (!st) return res.status(400).send("Invalid/expired state");
+
+  oauthStates.delete(state);
+
+  try {
+    const tokenData = await exchangeCodeForToken(
+      DANI_CLIENT_ID,
+      DANI_CLIENT_SECRET,
+      code,
+      DANI_REDIRECT_URI,
+      st.codeVerifier
+    );
+
+    const accessToken = tokenData.access_token;
+    if (!accessToken) throw new Error("No access_token received");
+
+    const sid = crypto.randomBytes(24).toString("hex");
+    sessions.set(sid, {
+      accessToken,
+      creator: { app: "On My Time", connected: true },
+      ts: Date.now(),
+    });
+
+    setSessionCookie(res, sid);
+
+    console.log("✅ DaniApp OAuth successful");
+    return res.redirect("https://thesuccessmindset.club/daniapp/index.html?connected=1");
+  } catch (err) {
+    console.error("DaniApp OAuth failed:", {
+      status: err?.response?.status,
+      data: err?.response?.data,
+      message: err.message,
+    });
+    return res.status(500).send("DaniApp connection failed. Check server logs.");
+  }
+});
+
+// ... rest of your routes (api/me, logout, webhooks, etc.) remain the same
 
 app.listen(PORT, () => {
-  console.log(
-    `Server running on ${PORT}`
-  );
+  console.log("=".repeat(60));
+  console.log("SERVER READY");
+  console.log("=".repeat(60));
+  console.log(`Dashboard: https://fanvue-proxy2.onrender.com/`);
+  // ... other logs
 });
