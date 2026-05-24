@@ -1,4 +1,4 @@
-// server.cjs — On My Time / DaniApp Fanvue OAuth + Single + Bulk Posting + Media Ready Polling
+// server.cjs — Fanvue MVP + DaniApp stacked service
 
 require("dotenv").config();
 
@@ -26,6 +26,9 @@ app.use((req, res, next) => {
   next();
 });
 
+const CLIENT_ID = (process.env.CLIENT_ID || "").trim();
+const CLIENT_SECRET = (process.env.CLIENT_SECRET || "").trim();
+
 const DANI_CLIENT_ID = (process.env.DANI_CLIENT_ID || "").trim();
 const DANI_CLIENT_SECRET = (process.env.DANI_CLIENT_SECRET || "").trim();
 const DANI_REDIRECT_URI = (process.env.DANI_REDIRECT_URI || "").trim();
@@ -41,6 +44,10 @@ app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 app.use(cookieParser(SESSION_SECRET));
 app.use(express.static(path.join(__dirname, "public")));
+
+function baseUrl(req) {
+  return `https://${req.get("host")}`;
+}
 
 function getSession(req) {
   const sid = req.signedCookies?.[COOKIE_NAME];
@@ -236,13 +243,10 @@ async function waitForMediaReady(mediaUuid, fanvueHeaders) {
     console.log("MEDIA STATUS:", {
       mediaUuid,
       attempt,
-      status,
-      response: resp.data
+      status
     });
 
-    if (status === "ready") {
-      return resp.data;
-    }
+    if (status === "ready") return resp.data;
 
     if (status === "error") {
       throw new Error(`Fanvue media processing failed for ${mediaUuid}`);
@@ -380,20 +384,122 @@ async function uploadMediaAndCreatePost({
 }
 
 console.log("=".repeat(60));
-console.log("ON MY TIME FANVUE SERVICE STARTING");
+console.log("STACKED FANVUE SERVICE STARTING");
+console.log("MVP CLIENT_ID present:", !!CLIENT_ID);
+console.log("MVP CLIENT_SECRET present:", !!CLIENT_SECRET);
 console.log("DANI_CLIENT_ID present:", !!DANI_CLIENT_ID);
 console.log("DANI_CLIENT_SECRET present:", !!DANI_CLIENT_SECRET);
 console.log("DANI_REDIRECT_URI present:", !!DANI_REDIRECT_URI);
 console.log("PORT:", PORT);
 console.log("=".repeat(60));
 
+/* =========================
+   STACKED FRONTENDS
+========================= */
+
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
+
+app.get("/mvp", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
+
+app.get("/daniapp", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "daniapp", "index.html"));
+});
+
+app.get("/daniapp/index.html", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "daniapp", "index.html"));
 });
 
 app.get("/health", (req, res) => {
   res.status(200).send("ok");
 });
+
+/* =========================
+   MVP OAUTH
+========================= */
+
+app.get("/oauth/start", (req, res) => {
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    return res.status(503).send("Missing CLIENT_ID / CLIENT_SECRET.");
+  }
+
+  const pkce = createPkceState();
+  const redirectUri = `${baseUrl(req)}/oauth/callback`;
+
+  const authUrl = new URL("https://auth.fanvue.com/oauth2/auth");
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "openid offline_access read:self read:fan read:insights");
+  authUrl.searchParams.set("state", pkce.state);
+  authUrl.searchParams.set("nonce", pkce.nonce);
+  authUrl.searchParams.set("code_challenge", pkce.codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  return res.redirect(authUrl.toString());
+});
+
+app.get("/oauth/callback", async (req, res) => {
+  const { code, state } = req.query;
+
+  if (!code || !state) return res.status(400).send("Missing code/state");
+
+  const st = oauthStates.get(state);
+  if (!st) return res.status(400).send("Invalid/expired state.");
+
+  oauthStates.delete(state);
+
+  try {
+    const redirectUri = `${baseUrl(req)}/oauth/callback`;
+
+    const basicAuth = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
+
+    const tokenResp = await axios.post(
+      "https://auth.fanvue.com/oauth2/token",
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri,
+        code_verifier: st.codeVerifier
+      }).toString(),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${basicAuth}`
+        },
+        timeout: 20000
+      }
+    );
+
+    const accessToken = tokenResp.data.access_token;
+    if (!accessToken) throw new Error("No access_token returned");
+
+    const sid = crypto.randomBytes(24).toString("hex");
+
+    sessions.set(sid, {
+      accessToken,
+      creator: {
+        app: "Fanvue MVP",
+        connected: true
+      },
+      ts: Date.now()
+    });
+
+    setSessionCookie(res, sid);
+
+    return res.redirect("/");
+  } catch (err) {
+    console.error("MVP OAUTH FAILED:", err?.response?.status, err?.response?.data || err.message);
+    return res.status(500).send("MVP OAuth failed.");
+  }
+});
+
+/* =========================
+   DANI OAUTH
+========================= */
 
 app.get("/daniapp/oauth/start", (req, res) => {
   if (!DANI_CLIENT_ID || !DANI_CLIENT_SECRET || !DANI_REDIRECT_URI) {
@@ -424,9 +530,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
   const { code, state, error, error_description } = req.query;
 
   if (error) {
-    return res
-      .status(400)
-      .send(`Fanvue denied authorization: ${error} ${error_description || ""}`);
+    return res.status(400).send(`Fanvue denied authorization: ${error} ${error_description || ""}`);
   }
 
   if (!code || !state) return res.status(400).send("Missing code/state");
@@ -483,7 +587,7 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
       };
     } catch (profileErr) {
       console.error(
-        "DANIAPP PROFILE FETCH FAILED:",
+        "DANI PROFILE FETCH FAILED:",
         profileErr?.response?.status,
         profileErr?.response?.data || profileErr.message
       );
@@ -501,22 +605,21 @@ app.get("/daniapp/oauth/callback", async (req, res) => {
     setSessionCookie(res, sid);
 
     return res.redirect(
-      "https://thesuccessmindset.club/daniapp/index.html" +
+      "https://fanvue-proxy2.onrender.com/daniapp" +
         "?connected=1" +
         "&name=" + encodeURIComponent(profile.name) +
         "&handle=" + encodeURIComponent(profile.handle) +
         "&avatar=" + encodeURIComponent(profile.avatar)
     );
   } catch (err) {
-    console.error(
-      "DANIAPP OAUTH FAILED:",
-      err?.response?.status,
-      err?.response?.data || err.message
-    );
-
-    return res.status(500).send("DaniApp OAuth failed. Check Render logs.");
+    console.error("DANI OAUTH FAILED:", err?.response?.status, err?.response?.data || err.message);
+    return res.status(500).send("Dani OAuth failed.");
   }
 });
+
+/* =========================
+   DANI POST API
+========================= */
 
 app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
   const s = getSession(req);
@@ -552,11 +655,7 @@ app.post("/daniapp/api/post", upload.single("media"), async (req, res) => {
       ...result
     });
   } catch (err) {
-    console.error(
-      "DANIAPP POST FAILED:",
-      err?.response?.status,
-      err?.response?.data || err.message
-    );
+    console.error("DANI POST FAILED:", err?.response?.status, err?.response?.data || err.message);
 
     return res.status(500).json({
       ok: false,
@@ -702,8 +801,13 @@ app.post("/daniapp/api/bulk-post", upload.single("bulkFile"), async (req, res) =
   });
 });
 
+/* =========================
+   SHARED API
+========================= */
+
 app.get("/api/me", (req, res) => {
   const s = getSession(req);
+
   if (!s) return res.status(401).json({ error: "Not authenticated" });
 
   const profile = extractCreatorProfile(s.creator || {});
@@ -723,6 +827,10 @@ app.post("/api/logout", (req, res) => {
   return res.json({ ok: true });
 });
 
+/* =========================
+   FALLBACK
+========================= */
+
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
@@ -730,8 +838,9 @@ app.get("*", (req, res) => {
 app.listen(PORT, () => {
   console.log("=".repeat(60));
   console.log("SERVER READY");
-  console.log("Dani Start: https://fanvue-proxy2.onrender.com/daniapp/oauth/start");
-  console.log("Dani Post API: https://fanvue-proxy2.onrender.com/daniapp/api/post");
-  console.log("Dani Bulk API: https://fanvue-proxy2.onrender.com/daniapp/api/bulk-post");
+  console.log("MVP:  https://fanvue-proxy2.onrender.com/");
+  console.log("Dani: https://fanvue-proxy2.onrender.com/daniapp");
+  console.log("Dani OAuth: https://fanvue-proxy2.onrender.com/daniapp/oauth/start");
+  console.log("Dani Bulk: https://fanvue-proxy2.onrender.com/daniapp/api/bulk-post");
   console.log("=".repeat(60));
 });
