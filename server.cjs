@@ -127,6 +127,69 @@ function getMediaType(mimetype) {
   return "image";
 }
 
+function guessMimeType(filename, contentType) {
+  if (contentType && contentType !== "application/octet-stream") return contentType;
+
+  const lower = String(filename || "").toLowerCase();
+
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".jpeg") || lower.endsWith(".jpg")) return "image/jpeg";
+
+  return "image/jpeg";
+}
+
+function getFilenameFromUrl(url, fallback = "media.jpg") {
+  try {
+    const u = new URL(url);
+    const name = decodeURIComponent(u.pathname.split("/").pop() || "").trim();
+    return name || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function downloadUrlAsFile(mediaUrl, mediaFilename) {
+  const filename = mediaFilename || getFilenameFromUrl(mediaUrl);
+
+  const response = await axios.get(mediaUrl, {
+    responseType: "arraybuffer",
+    timeout: 120000,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    validateStatus: () => true,
+    headers: {
+      "User-Agent": "Mozilla/5.0"
+    }
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw {
+      stage: "download_media_url",
+      status: response.status,
+      details: {
+        error: "Could not download media URL",
+        mediaUrl,
+        response: response.data ? String(response.data).slice(0, 500) : ""
+      }
+    };
+  }
+
+  const mimetype = guessMimeType(filename, response.headers["content-type"]);
+
+  return {
+    fieldname: "media",
+    originalname: filename,
+    encoding: "7bit",
+    mimetype,
+    buffer: Buffer.from(response.data),
+    size: Buffer.byteLength(response.data)
+  };
+}
+
 function getName(profile, fallback) {
   return profile?.displayName || profile?.name || profile?.username || profile?.handle || fallback;
 }
@@ -442,14 +505,14 @@ app.get("/debug", (req, res) => {
     ok: true,
     sessions: sessions.size,
     states: oauthStates.size,
-    build: "two-app-midknight-dani-bulk-restored"
+    build: "two-app-midknight-dani-bulk-url-supported"
   });
 });
 
 app.get("/env-check", (req, res) => {
   res.json({
     ok: true,
-    build: "two-app-midknight-dani-bulk-restored",
+    build: "two-app-midknight-dani-bulk-url-supported",
     routes: {
       midknightStart: "/auth/fanvue",
       midknightCallback: "/oauth/callback",
@@ -583,9 +646,7 @@ app.get("/oauth/callback", async (req, res) => {
       profile
     });
 
-    res.redirect(
-      `${FRONTEND_ORIGIN}/midknight-vip-services/?connected=1&sid=${sid}`
-    );
+    res.redirect(`${FRONTEND_ORIGIN}/midknight-vip-services/?connected=1&sid=${sid}`);
   } catch (err) {
     console.error("MidKnight OAuth failed:", err?.response?.data || err.message);
 
@@ -720,14 +781,77 @@ app.post("/daniapp/api/bulk-post", upload.array("media", 50), async (req, res) =
       });
     }
 
-    if (!req.files || !req.files.length) {
-      return res.status(400).json({
-        ok: false,
-        error: "No media files uploaded"
+    const results = [];
+
+    if (Array.isArray(req.body?.rows) && req.body.rows.length) {
+      const rows = req.body.rows.slice(0, 50);
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || {};
+        const mediaUrl = String(row.media_url || row.mediaUrl || row.url || "").trim();
+        const mediaFilename = String(row.media_filename || row.mediaFilename || getFilenameFromUrl(mediaUrl, `media_${i + 1}.jpg`)).trim();
+
+        if (!mediaUrl) {
+          results.push({
+            success: false,
+            index: i,
+            file: mediaFilename,
+            error: "Missing media_url"
+          });
+          continue;
+        }
+
+        try {
+          const file = await downloadUrlAsFile(mediaUrl, mediaFilename);
+
+          const result = await uploadMediaAndCreatePost({
+            accessToken: session.accessToken,
+            file,
+            caption: row.caption || "",
+            audience: row.audience || "followers-and-subscribers",
+            price: row.price || 0,
+            postNow: String(row.post_now ?? row.postNow ?? "false").toLowerCase(),
+            scheduleTime: row.schedule_time || row.scheduleTime || ""
+          });
+
+          results.push({
+            success: true,
+            index: i,
+            file: mediaFilename,
+            mediaUrl,
+            mediaUuid: result.mediaUuid,
+            uploadId: result.uploadId,
+            post: result.post
+          });
+        } catch (err) {
+          results.push({
+            success: false,
+            index: i,
+            file: mediaFilename,
+            mediaUrl,
+            stage: err.stage || "unknown",
+            status: err.status || 500,
+            error: err?.response?.data || err.details || err.message || err
+          });
+        }
+      }
+
+      return res.json({
+        ok: true,
+        mode: "url_rows",
+        total: results.length,
+        successCount: results.filter(r => r.success).length,
+        failedCount: results.filter(r => !r.success).length,
+        results
       });
     }
 
-    const results = [];
+    if (!req.files || !req.files.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "No media files uploaded and no URL rows provided"
+      });
+    }
 
     for (let i = 0; i < req.files.length; i++) {
       const file = req.files[i];
@@ -767,6 +891,7 @@ app.post("/daniapp/api/bulk-post", upload.array("media", 50), async (req, res) =
 
     res.json({
       ok: true,
+      mode: "multipart_files",
       total: results.length,
       successCount: results.filter(r => r.success).length,
       failedCount: results.filter(r => !r.success).length,
